@@ -1,7 +1,7 @@
 {
-  "_comment": "运行时清单。所有组件均在用户设备上按需下载，本项目不分发任何第三方二进制。",
-  "schemaVersion": 2,
-  "updatedAt": "2026-11-17",
+  "_comment": "运行时清单。协议端 APK 随 App 一起打包在 assets 内，无需联网下载。",
+  "schemaVersion": 3,
+  "updatedAt": "2026-11-18",
 
   "protocol": {
     "_comment": "PicoOnebot —— 由手表 QQ 注入 Hook 后重打包而成，包名与原版手表 QQ 相同，安装会覆盖原版。因此只需安装这一个 APK，不需要单独装手表 QQ。",
@@ -14,14 +14,18 @@
       {
         "version": "0.16",
         "status": "verified",
-        "sizeBytes": 52090438,
-        "sha256": "10edee0981a14c2c2742c74e4cf0fa99e3645f749e9124d9d067de387d9d6938",
+        "sizeBytes": 52482332,
+        "sha256": "4ddd3451f40e49792b651ed5c31176a29c44b0d4b5f38d3c59558b6085f5025c",
+        "bundled": {
+          "assetPath": "runtime/PicoOnebot-0.16.apk",
+          "note": "随 App 打包，免下载；已移除桌面图标（exported 保留，可被外部拉起）"
+        },
         "sources": [
           {
             "id": "github",
             "url": "https://github.com/Exmeaning/PicoOnebot/releases/download/v0.16/PicoOnebot_0.16.apk",
             "resumable": true,
-            "note": "官方 Release"
+            "note": "官方 Release（仅作更新来源，正常路径不使用）"
           }
         ],
         "defaults": {
@@ -47,7 +51,7 @@
   },
 
   "mirrors": {
-    "_comment": "GitHub 资源在国内的镜像回落（按顺序尝试）。{url} 会被替换为原始地址。",
+    "_comment": "GitHub 资源在国内的镜像回退（按顺序尝试）。{url} 会被替换为原始地址。仅用于协议端更新，首次安装不需要。",
     "github": [
       "https://ghfast.top/{url}",
       "https://ghproxy.com/{url}",

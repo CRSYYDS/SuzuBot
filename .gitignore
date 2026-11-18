@@ -27,3 +27,6 @@ local.properties
 *.hprof
 .kotlin/
 crash-*.txt
+
+# 签名配置（绝不提交）
+keystore.properties

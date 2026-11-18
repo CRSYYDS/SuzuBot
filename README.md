@@ -22,7 +22,7 @@ SuzuBot 是一个 **Android 启动器 + AI 后端**，本身不实现 QQ 协议�
 
 把两件事打包成一条龙：
 
-1. **协议端**：自动下载并安装 [PicoOnebot](https://github.com/Exmeaning/PicoOnebot)（基于手表 QQ）
+1. **协议端**：内置 [PicoOnebot](https://github.com/Exmeaning/PicoOnebot)（基于手表 QQ），安装包随 App 打包，**免联网下载**
 2. **AI 后端**：Kotlin 原生实现，支持多模型、工具调用、人设、记忆
 
 
@@ -133,7 +133,7 @@ release里下载apk安装包安装即可 用户仅需填写apikey和扫码登陆
 ## 目录结构
 
 ```
-app/src/main/java/dev/qqbot/wrapper/
+app/src/main/java/com/crsyyds/suzubot/
 ├─ App.kt                      应用入口 + 崩溃日志落盘
 ├─ backend/
 │  ├─ BotEngine.kt             核心引擎：消息处理 / 工具循环 / 唤醒

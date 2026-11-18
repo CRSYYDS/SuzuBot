@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
 	id("com.android.application")
 	kotlin("android")
@@ -5,22 +7,48 @@ plugins {
 	id("org.jetbrains.kotlin.plugin.compose")
 }
 
+/**
+ * 签名信息从 keystore.properties 读取（该文件不进版本库）。
+ *
+ * 仓库里只放 keystore.properties.example 作模板；
+ * 本地/CI 各自放自己的 keystore.properties。
+ */
+val keystoreProps = Properties().apply {
+	val f = rootProject.file("keystore.properties")
+	if (f.exists()) f.inputStream().use { load(it) }
+}
+
+/** 是否具备正式签名条件。 */
+val hasReleaseSigning = keystoreProps.getProperty("storeFile")?.let {
+	rootProject.file(it).exists()
+} == true
+
 android {
-	namespace = "dev.qqbot.wrapper"
+	namespace = "com.crsyyds.suzubot"
 	compileSdk = 35
 
 	defaultConfig {
-		applicationId = "dev.qqbot.wrapper"
+		applicationId = "com.crsyyds.suzubot"
 		minSdk = 24          // Android 7.0
 		targetSdk = 35
 
-		// 每次构建自动递增 versionCode：避免 OPPO/ColorOS 报「已安装相同版本」
-		// 用构建时间（分钟级）保证唯一且单调递增
-		val stamp = (System.currentTimeMillis() / 60_000L).toInt()
-		versionCode = stamp
-		versionName = "0.1.${stamp % 10000}"
+		// versionName 是给人看的语义化版本；
+		// versionCode 用构建时间戳，保证每次构建唯一（避免 ColorOS 报「已安装相同版本」）
+		versionName = "1.1.0"
+		versionCode = (System.currentTimeMillis() / 60_000L).toInt()
 
 		vectorDrawables { useSupportLibrary = true }
+	}
+
+	signingConfigs {
+		create("release") {
+			if (hasReleaseSigning) {
+				storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+				storePassword = keystoreProps.getProperty("storePassword")
+				keyAlias = keystoreProps.getProperty("keyAlias")
+				keyPassword = keystoreProps.getProperty("keyPassword")
+			}
+		}
 	}
 
 	buildTypes {
@@ -29,15 +57,16 @@ android {
 			applicationIdSuffix = ".debug"
 		}
 		release {
-			// 首版先关混淆，等链路跑通再开，免得真机验证时被 R8 坑
+			// 首版先关混淆，等分发稳定后再考虑开 R8
 			isMinifyEnabled = false
 			isShrinkResources = false
 			proguardFiles(
 				getDefaultProguardFile("proguard-android-optimize.txt"),
 				"proguard-rules.pro"
 			)
-			// 未配置正式签名前用 debug 签名，方便自测；发布前请替换
-			signingConfig = signingConfigs.getByName("debug")
+			if (hasReleaseSigning) {
+				signingConfig = signingConfigs.getByName("release")
+			}
 		}
 	}
 
@@ -66,11 +95,15 @@ android {
 		}
 	}
 
-	// 便于区分产物名（固定文件名，避免版本号变化导致路径改变）
+	// 产物名带上版本号，便于发 Release 时区分
 	applicationVariants.all {
 		outputs.all {
 			val v = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
-			v.outputFileName = "SuzuBot-${buildType.name}.apk"
+			v.outputFileName = if (buildType.name == "release") {
+				"SuzuBot-v${versionName}.apk"
+			} else {
+				"SuzuBot-${buildType.name}.apk"
+			}
 		}
 	}
 }
