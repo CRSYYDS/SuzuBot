@@ -206,11 +206,34 @@ class SetupFlow(private val context: Context) {
 			return Outcome.Done(Step.START_PROTOCOL)
 		}
 
+		// 取安装包：用户手动选的 → 内置 assets（会自动复制到缓存目录）
+		//
+		// 注意：必须调 downloader.ensure()，它才负责把 assets/runtime/*.apk
+		// 复制到 componentDir。之前这份工作由被删掉的 downloadProtocol 步骤做，
+		// 导致 installProtocol 直接查目录时找不到文件。
+		val component = downloader.component("protocol")
+			?: return Outcome.Failed("清单缺失 protocol 配置", "请重新安装本应用")
+
 		val apk = userApkPath?.let(::File)?.takeIf { it.exists() }
-			?: downloader.component("protocol")?.let { c ->
-				File(downloader.componentDir("protocol"), c.fileName).takeIf { it.exists() }
+			?: run {
+				// 先看缓存里有没有
+				val cached = File(downloader.componentDir("protocol"), component.fileName)
+				if (cached.exists() && cached.length() > 0) {
+					cached
+				} else {
+					// 没有就从 assets 复制（或回退到下载）
+					when (val r = downloader.ensure(component, onProgress = null)) {
+						is RuntimeDownloader.Result.Ok -> r.file
+						is RuntimeDownloader.Result.NeedsUserFile ->
+							return Outcome.NeedsUserFile(r.reason)
+						is RuntimeDownloader.Result.Failed ->
+							return Outcome.Failed(
+								"准备协议端失败：${r.message}",
+								"可尝试重装 App，或手动选择本地 APK"
+							)
+					}
+				}
 			}
-			?: return Outcome.Failed("找不到 PicoOnebot 安装包", "请返回上一步重试")
 
 		// 权限检查
 		if (!Installer.canInstallPackages(context)) {

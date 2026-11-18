@@ -34,7 +34,7 @@ android {
 
 		// versionName 是给人看的语义化版本；
 		// versionCode 用构建时间戳，保证每次构建唯一（避免 ColorOS 报「已安装相同版本」）
-		versionName = "1.1.1"
+		versionName = "1.1.2"
 		versionCode = (System.currentTimeMillis() / 60_000L).toInt()
 
 		vectorDrawables { useSupportLibrary = true }
@@ -82,6 +82,14 @@ android {
 	buildFeatures {
 		compose = true
 		buildConfig = true
+	}
+
+	// assets 里的 APK 不做压缩：
+	//  1. 已压缩的 APK 再压收益极低（50 MB 只省 1.5 MB）
+	//  2. 压缩后 assets.openFd() 不可用，只能走流式解压，慢且耗内存
+	//  3. 不压缩可直接 mmap，复制 50 MB 几乎瞬间完成
+	androidResources {
+		noCompress += listOf("apk")
 	}
 
 	packaging {
