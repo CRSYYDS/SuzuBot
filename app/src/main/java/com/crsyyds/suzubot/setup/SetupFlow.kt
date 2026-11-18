@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.StatFs
 import androidx.core.content.FileProvider
+import com.crsyyds.suzubot.pico.CredentialStore
 import com.crsyyds.suzubot.pico.PicoOnebotClient
 import com.crsyyds.suzubot.runtime.Installer
 import com.crsyyds.suzubot.runtime.RuntimeDownloader
@@ -29,14 +30,13 @@ class SetupFlow(private val context: Context) {
 
 	enum class Step(val order: Int, val title: String) {
 		DEVICE_CHECK(0, "检查设备"),
-		DOWNLOAD(1, "准备协议端"),
-		INSTALL(2, "安装协议端"),
-		START_PROTOCOL(3, "启动协议端"),
-		INIT_PASSWORD(4, "初始化控制台"),
-		SCAN_LOGIN(5, "扫码登录 QQ"),
-		CONFIGURE_BACKEND(6, "连接机器人后端"),
-		CONFIGURE_AI(7, "配置 AI"),
-		DONE(8, "完成");
+		INSTALL(1, "安装协议端"),
+		START_PROTOCOL(2, "启动协议端"),
+		INIT_PASSWORD(3, "初始化控制台"),
+		SCAN_LOGIN(4, "扫码登录 QQ"),
+		CONFIGURE_BACKEND(5, "连接机器人后端"),
+		CONFIGURE_AI(6, "配置 AI"),
+		DONE(7, "完成");
 
 		companion object {
 			val total get() = values().size
@@ -90,9 +90,19 @@ class SetupFlow(private val context: Context) {
 		get() = prefs.getString(KEY_BACKEND_TOKEN, null)
 		set(v) = prefs.edit().putString(KEY_BACKEND_TOKEN, v).apply()
 
+	/**
+	 * 控制台密码。
+	 *
+	 * 底层用 CredentialStore（全局单一来源），
+	 * 避免 SetupFlow 与 HomeViewModel 各自持有一份导致不同步。
+	 */
 	var webuiPassword: String?
-		get() = prefs.getString(KEY_WEBUI_PASSWORD, null)
-		set(v) = prefs.edit().putString(KEY_WEBUI_PASSWORD, v).apply()
+		get() = CredentialStore.webUiPassword
+		set(value) {
+			if (value.isNullOrBlank()) return
+			CredentialStore.setWebUiPassword(value)
+		}
+
 
 	var loggedInSelfId: String?
 		get() = prefs.getString(KEY_SELF_ID, null)
@@ -129,7 +139,6 @@ class SetupFlow(private val context: Context) {
 		val step = currentStep
 		val outcome = when (step) {
 			Step.DEVICE_CHECK -> deviceCheck()
-			Step.DOWNLOAD -> downloadProtocol(onProgress)
 			Step.INSTALL -> installProtocol()
 			Step.START_PROTOCOL -> startProtocol()
 			Step.INIT_PASSWORD -> initPassword()
@@ -179,46 +188,7 @@ class SetupFlow(private val context: Context) {
 			)
 		}
 
-		return Outcome.Done(Step.DOWNLOAD)
-	}
-
-	private suspend fun downloadProtocol(onProgress: ((Long, Long) -> Unit)?): Outcome {
-		// 设备上已经有可用的 PicoOnebot（例如之前装过）→ 跳过准备与安装
-		// 注意：这里用 awaitPackageInstalled 而不是裸查，避免刚装完索引未更新时误判
-		if (awaitPackageInstalled(Requirements.PACKAGE, timeoutMs = 2_000)) {
-			// 只要 6099 在监听就说明协议端活着；密码不对留给 INIT_PASSWORD 步骤处理
-			if (portAlive(6099, 1_500)) {
-				markPassed(Step.INSTALL)
-				return Outcome.Done(Step.START_PROTOCOL)
-			}
-			// 包在但进程没起来 → 也算安装成功，交给 START_PROTOCOL 去拉起
-			markPassed(Step.DOWNLOAD)
-			return Outcome.Done(Step.START_PROTOCOL)
-		}
-
-		// 用户已手动选过 APK 就直接用
-		userApkPath?.let { p ->
-			val f = File(p)
-			if (f.exists() && f.length() > 0) {
-				return Outcome.Done(Step.INSTALL)
-			}
-		}
-
-		val component = downloader.component("protocol")
-			?: return Outcome.Failed("清单缺失 protocol 配置", "请重新安装本应用")
-
-		return when (
-			val r = downloader.ensure(component) { done, total ->
-				onProgress?.invoke(done, total ?: component.sizeBytes ?: 0L)
-			}
-		) {
-			is RuntimeDownloader.Result.Ok -> Outcome.Done(Step.INSTALL)
-			is RuntimeDownloader.Result.NeedsUserFile -> Outcome.NeedsUserFile(r.reason)
-			is RuntimeDownloader.Result.Failed -> Outcome.Failed(
-				reason = r.message,
-				hint = "协议端已随 App 打包，正常不会出现此错误。可尝试重装 App，或手动选择本地 APK。"
-			)
-		}
+		return Outcome.Done(Step.INSTALL)
 	}
 
 	/**

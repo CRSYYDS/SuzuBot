@@ -51,6 +51,7 @@ import com.crsyyds.suzubot.ui.components.ButtonShape
 import com.crsyyds.suzubot.ui.components.EmptyHint
 import com.crsyyds.suzubot.ui.components.ExpandableSection
 import com.crsyyds.suzubot.ui.components.KvRow
+import com.crsyyds.suzubot.ui.components.PclChip
 import com.crsyyds.suzubot.ui.components.PclCard
 import com.crsyyds.suzubot.ui.components.PclDivider
 import com.crsyyds.suzubot.ui.components.SectionTitle
@@ -118,7 +119,8 @@ class HomeActivity : ComponentActivity() {
 						},
 						onOpenPicoUi = { openPicoUi() },
 						onStarPico = { openGithub("pico") },
-						onStarSuzu = { openGithub("harku") }
+						onStarSuzu = { openGithub("suzu") },
+						onResetProtocol = vm::resetProtocol
 					)
 				}
 			}
@@ -226,7 +228,8 @@ private fun HomeScreen(
 	onOpenModels: () -> Unit,
 	onOpenPicoUi: () -> Unit,
 	onStarPico: () -> Unit,
-	onStarSuzu: () -> Unit
+	onStarSuzu: () -> Unit,
+	onResetProtocol: () -> Unit
 ) {
 	Column(
 		modifier = Modifier
@@ -248,11 +251,20 @@ private fun HomeScreen(
 				Spacer(Modifier.height(12.dp))
 			}
 
-			StatusCard(state)
+			StatusCard(state, onResetProtocol, onOpenPicoUi)
 			Spacer(Modifier.height(12.dp))
 			BotCard(state, onStartBot, onStopBot, onLaunchPico)
 			Spacer(Modifier.height(12.dp))
-			ActionsCard(onOpenConsole, onBatterySettings, onOpenSetup, onOpenPersona, onOpenModels, onOpenPicoUi)
+			ActionsCard(
+				onOpenConsole = onOpenConsole,
+				onBatterySettings = onBatterySettings,
+				onOpenSetup = onOpenSetup,
+				onOpenPersona = onOpenPersona,
+				onOpenModels = onOpenModels,
+				onOpenPicoUi = onOpenPicoUi,
+				highlightModels = !state.apiKeyConfigured,
+				highlightPersona = !state.personaConfigured
+			)
 			Spacer(Modifier.height(12.dp))
 			StarButtons(onStarPico, onStarSuzu)
 			Spacer(Modifier.height(24.dp))
@@ -297,15 +309,6 @@ private fun TopBar(state: HomeUiState, onRefresh: () -> Unit) {
 					else -> PclTextDim
 				}
 			)
-		}
-		Box(
-			modifier = Modifier
-				.size(36.dp)
-				.clip(CircleShape)
-				.background(MaterialTheme.colorScheme.surfaceVariant),
-			contentAlignment = Alignment.Center
-		) {
-			Text("↻", color = MaterialTheme.colorScheme.primary)
 		}
 	}
 }
@@ -384,7 +387,11 @@ private fun PicoLaunchCard(state: HomeUiState, onLaunch: () -> Unit) {
 // ── 运行状态 ──────────────────────────────────────────────────────────────────
 
 @Composable
-private fun StatusCard(state: HomeUiState) {
+private fun StatusCard(
+	state: HomeUiState,
+	onResetProtocol: () -> Unit,
+	onOpenPicoUi: () -> Unit
+) {
 	val online = state.status?.online == true
 	val accent = when {
 		!state.picoRunning -> PclErr
@@ -422,15 +429,44 @@ private fun StatusCard(state: HomeUiState) {
 			state.error != null && state.picoRunning -> {
 				Column {
 					Text(
-						"协议端在跑，但控制台密码不匹配（App 重装过）。",
+						"协议端在跑，但控制台密码不匹配。",
 						style = MaterialTheme.typography.bodySmall,
 						color = PclWarn
 					)
-					Spacer(Modifier.height(8.dp))
+					Spacer(Modifier.height(6.dp))
 					Text(
-						"点下方按钮用默认密码重置控制台密码，QQ 登录状态不受影响。",
+						"这通常是 App 重装后，本地记录的密码丢了，" +
+							"但协议端里的密码还在。" +
+							"点下方按钮重置：清空协议端数据并恢复默认密码。",
 						style = MaterialTheme.typography.bodySmall,
 						color = MaterialTheme.colorScheme.onSurfaceVariant
+					)
+					Spacer(Modifier.height(10.dp))
+					Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+						Button(
+							onClick = onResetProtocol,
+							modifier = Modifier
+								.weight(1f)
+								.height(40.dp),
+							shape = RoundedCornerShape(9.dp)
+						) {
+							Text("重置协议端数据", style = MaterialTheme.typography.bodySmall)
+						}
+						OutlinedButton(
+							onClick = onOpenPicoUi,
+							modifier = Modifier
+								.weight(1f)
+								.height(40.dp),
+							shape = RoundedCornerShape(9.dp)
+						) {
+							Text("打开协议端", style = MaterialTheme.typography.bodySmall)
+						}
+					}
+					Spacer(Modifier.height(4.dp))
+					Text(
+						"注：重置会让 QQ 退出登录，需要重新扫码。建议先试右边的「打开协议端」看看能不能在界面里改密码。",
+						style = MaterialTheme.typography.bodySmall,
+						color = PclTextDim
 					)
 				}
 			}
@@ -520,26 +556,105 @@ private fun ActionsCard(
 	onOpenSetup: () -> Unit,
 	onOpenPersona: () -> Unit,
 	onOpenModels: () -> Unit,
-	onOpenPicoUi: () -> Unit
+	onOpenPicoUi: () -> Unit,
+	/** 首次配置时高亮引导 */
+	highlightModels: Boolean,
+	highlightPersona: Boolean
 ) {
-	var expanded by remember { mutableStateOf(false) }
-
 	PclCard {
-		ExpandableSection("运维", expanded, { expanded = !expanded }) {
-			Column {
-				ActionRow("模型配置", "主模型 + 自动回退（DeepSeek / 智谱 / 自定义）", onOpenModels)
-				PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
-				ActionRow("编辑机器人人设", "性格、语气、禁止项（soul）", onOpenPersona)
-				PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
-				ActionRow("打开 PicoOnebot 界面", "直接跳到协议端 App", onOpenPicoUi)
-				PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
-				ActionRow("打开 PicoOnebot 网页控制台", "在浏览器里管理", onOpenConsole)
-				PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
-				ActionRow("放宽省电限制", "防止安卓系统杀后台", onBatterySettings)
-				PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
-				ActionRow("重新运行部署向导", "换号 / 换 API / 修复环境", onOpenSetup)
-				Spacer(Modifier.height(6.dp))
+		SectionTitle("运维")
+		Spacer(Modifier.height(6.dp))
+		Column {
+			// 高亮：模型配置
+			GuideActionRow(
+				title = "模型配置",
+				subtitle = "主模型 + 自动回退（DeepSeek / 智谱 / 自定义）",
+				onClick = onOpenModels,
+				highlight = highlightModels,
+				highlightText = "先配置这个"
+			)
+			PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
+			// 高亮：人设
+			GuideActionRow(
+				title = "编辑机器人人设",
+				subtitle = "性格、语气、禁止项（soul）",
+				onClick = onOpenPersona,
+				highlight = highlightPersona,
+				highlightText = "建议完善"
+			)
+			PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
+			ActionRow("打开 PicoOnebot 界面", "直接跳到协议端 App", onOpenPicoUi)
+			PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
+			ActionRow("打开 PicoOnebot 网页控制台", "在浏览器里管理", onOpenConsole)
+			PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
+			ActionRow("放宽省电限制", "防止安卓系统杀后台", onBatterySettings)
+			PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
+			ActionRow("重新运行部署向导", "换号 / 换 API / 修复环境", onOpenSetup)
+			Spacer(Modifier.height(6.dp))
+		}
+	}
+}
+
+/**
+ * 带引导高亮的操作行。
+ *
+ * 高亮时：左侧竖条 + 背景色 + 小标签，三重强调。
+ */
+@Composable
+private fun GuideActionRow(
+	title: String,
+	subtitle: String,
+	onClick: () -> Unit,
+	highlight: Boolean,
+	highlightText: String
+) {
+	Row(
+		modifier = Modifier
+			.fillMaxWidth()
+			.clip(RoundedCornerShape(8.dp))
+			.then(
+				if (highlight) {
+					Modifier.background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f))
+				} else Modifier
+			)
+			.padding(vertical = 10.dp, horizontal = if (highlight) 8.dp else 0.dp),
+		verticalAlignment = Alignment.CenterVertically
+	) {
+		if (highlight) {
+			Box(
+				modifier = Modifier
+					.width(3.dp)
+					.height(28.dp)
+					.clip(RoundedCornerShape(2.dp))
+					.background(MaterialTheme.colorScheme.primary)
+			)
+			Spacer(Modifier.width(8.dp))
+		}
+		Column(modifier = Modifier.weight(1f)) {
+			Row(verticalAlignment = Alignment.CenterVertically) {
+				Text(
+					title,
+					style = MaterialTheme.typography.bodyMedium,
+					fontWeight = if (highlight) FontWeight.SemiBold else FontWeight.Normal
+				)
+				if (highlight) {
+					Spacer(Modifier.width(6.dp))
+					PclChip(highlightText, MaterialTheme.colorScheme.primary)
+				}
 			}
+			Text(
+				subtitle,
+				style = MaterialTheme.typography.bodySmall,
+				color = MaterialTheme.colorScheme.onSurfaceVariant
+			)
+		}
+		OutlinedButton(
+			onClick = onClick,
+			shape = RoundedCornerShape(8.dp),
+			modifier = Modifier.height(34.dp),
+			contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp)
+		) {
+			Text("打开", style = MaterialTheme.typography.bodySmall)
 		}
 	}
 }
