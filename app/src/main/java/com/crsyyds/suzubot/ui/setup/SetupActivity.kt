@@ -8,7 +8,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import java.io.File
 import java.io.FileOutputStream
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -47,7 +46,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -100,6 +98,10 @@ class SetupActivity : ComponentActivity() {
 	}
 
 	override fun onCreate(savedInstanceState: Bundle?) {
+		// 注意：super.onCreate 必须在任何分支之前调用，
+		// 否则提前 return 会触发 SuperNotCalledException 直接崩溃。
+		super.onCreate(savedInstanceState)
+
 		// 已完成配置的话，直接去主页（避免从协议端切回时停在引导页）
 		runCatching {
 			val flow = com.crsyyds.suzubot.setup.SetupFlow(this)
@@ -112,7 +114,6 @@ class SetupActivity : ComponentActivity() {
 			}
 		}
 
-		super.onCreate(savedInstanceState)
 		enableEdgeToEdge()
 
 		setContent {
@@ -291,43 +292,10 @@ private fun StepCard(state: SetupUiState) {
 				SetupUiState.Phase.Idle -> IdleBody()
 			}
 
-			AnimatedVisibility(visible = state.qrBitmap != null) {
-				Column(
-					modifier = Modifier.fillMaxWidth(),
-					horizontalAlignment = Alignment.CenterHorizontally
-				) {
-					Spacer(Modifier.height(18.dp))
-					Surface(
-						shape = RoundedCornerShape(14.dp),
-						color = Color.White,
-						modifier = Modifier.padding(6.dp)
-					) {
-						state.qrBitmap?.let {
-							Image(
-								bitmap = it.asImageBitmap(),
-								contentDescription = "登录二维码",
-								modifier = Modifier
-									.size(220.dp)
-									.padding(10.dp)
-							)
-						}
-					}
-					Spacer(Modifier.height(10.dp))
-					if (state.qrScanned) {
-						Text(
-							"已扫码，请在手机上确认",
-							color = MaterialTheme.colorScheme.primary,
-							style = MaterialTheme.typography.bodyMedium
-						)
-					} else if (state.qrCountdown > 0) {
-						Text(
-							"二维码剩余 ${state.qrCountdown} 秒",
-							style = MaterialTheme.typography.bodySmall,
-							color = MaterialTheme.colorScheme.onSurfaceVariant
-						)
-					}
-				}
-			}
+			// 注意：这里**不再显示登录二维码**。
+			// 首次登录必须在 PicoOnebot 自己的界面上点「同意隐私政策」，
+			// 二维码就在那个界面里，我们这边再显示一遍是重复的。
+			// 扫码阶段的状态由 SetupFlow.scanLogin 轮询 /api/status 检测。
 		}
 	}
 }

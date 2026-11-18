@@ -164,6 +164,7 @@ object Installer {
 		}
 	}
 
+
 	/** 已安装版本号（未安装返回 -1）。 */
 	fun installedVersion(context: Context, pkg: String): Long = try {
 		@Suppress("DEPRECATION")

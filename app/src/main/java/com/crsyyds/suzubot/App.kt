@@ -10,8 +10,16 @@ import android.app.Application
  */
 class App : Application() {
 
+	companion object {
+		@Volatile private var instance: App? = null
+		fun getInstance(): App? = instance
+	}
+
 	override fun onCreate() {
 		super.onCreate()
+		instance = this
+		// 最早时机初始化凭据存储，确保密码能落盘
+		com.crsyyds.suzubot.pico.CredentialStore.init(this)
 		applyDebugConfig()
 		installCrashHandler()
 		// 引导流程已完成就把保活服务拉起来

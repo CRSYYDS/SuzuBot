@@ -222,37 +222,141 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 	 * 用于：App 重装后本地密码丢失，但协议端里的密码还在，
 	 * 导致永远无法认证。重置后恢复默认密码 picopico。
 	 */
+	/**
+	 * 重置协议端数据。
+	 *
+	 * 场景：App 曾经用随机密码初始化过协议端，后来 App 被卸载，
+	 * 密码永久丢失，双方都进不去。只能清空协议端数据重来。
+	 *
+	 * 流程：卸载 → 用户确认 → 自动重装 → 设新密码（确定性的）
+	 */
+	/**
+	 * 重置协议端（彻底清空密码）。
+	 *
+	 * 场景：PicoOnebot 里留着不可知的旧密码，App 这边也没记录，
+	 * 双方都进不去。只能把协议端连数据一起卸掉重装。
+	 *
+	 * 实现：用 PackageInstaller.uninstall()，不靠系统弹窗（那个在 ColorOS 上不可靠）。
+	 */
+	/**
+	 * 重置协议端（引导用户手动卸载）。
+	 *
+	 * 为什么不能自动卸载：
+	 *  实测 OPPO ColorOS 上，第三方调 PackageInstaller.uninstall() 会让
+	 *  com.android.packageinstaller 直接崩溃（system_app_crash），
+	 *  连带着我们的 App 一起闪退。ACTION_DELETE 也不可靠（界面不一定弹）。
+	 *
+	 * 所以改成：打开系统「应用信息」页，让用户自己点卸载。
+	 * 这是唯一不会出问题的路径，而且用户点完就能看到结果。
+	 */
+	/**
+	 * 重置协议端。
+	 *
+	 * 实测结论（关键）：
+	 *  PicoOnebot 的控制台密码存在 /data/user_de/0/com.tencent.qqlite/，
+	 *  这是**设备加密存储**，卸载 App 时 Android 不保证清理，
+	 *  普通应用也无权删除它。
+	 *
+	 *  所以「卸载重装」解决不了密码问题——密码会从 DE 存储里恢复。
+	 *
+	 *  唯一可靠的路：让用户在系统设置里对 PicoOnebot 做「清除数据」，
+	 *  那个操作会同时清 DE 存储。
+	 */
 	fun resetProtocol() {
 		viewModelScope.launch {
-			_state.value = _state.value.copy(botError = "正在重置协议端…")
 			val app = getApplication<Application>()
 
-			// 1) 清掉本地记录的密码（反正已经失效）
-			CredentialStore.clear()
-
-			// 2) 卸载协议端
-			val uninstalled = runCatching {
-				val pm = app.packageManager
-				@Suppress("DEPRECATION")
-				pm.getPackageInfo("com.tencent.qqlite", 0)
-				// 用 Intent 让系统弹卸载确认（普通应用无静默卸载权限）
-				val intent = android.content.Intent(android.content.Intent.ACTION_DELETE)
-					.setData(android.net.Uri.parse("package:com.tencent.qqlite"))
+			// 直接跳到 PicoOnebot 的应用详情页
+			val ok = runCatching {
+				val intent = android.content.Intent(
+					android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+				).setData(android.net.Uri.parse("package:${SetupFlow.Requirements.PACKAGE}"))
 					.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
 				app.startActivity(intent)
 				true
 			}.getOrDefault(false)
 
-			if (!uninstalled) {
-				_state.value = _state.value.copy(
-					botError = "无法拉起卸载界面，请到系统设置里手动卸载「PicoOnebot」"
-				)
-				return@launch
+			_state.value = _state.value.copy(
+				botError = if (ok) {
+					"已打开 PicoOnebot 的应用详情页。\n\n" +
+						"在那里点「存储占用」→「清除数据」，" +
+						"然后回到本应用重试。\n\n" +
+						"（注意：只点「卸载」不行，必须是「清除数据」）"
+				} else {
+					"请手动去：设置 → 应用管理 → 找到 PicoOnebot → " +
+						"存储占用 → 清除数据"
+				}
+			)
+		}
+	}
+
+	/**
+	 * 轮询等待用户完成卸载，然后自动重装。
+	 *
+	 * 为什么要轮询：用户去系统界面操作，我们收不到回调，
+	 * 只能自己盯着包是不是没了。
+	 */
+	private suspend fun waitForUninstallAndReinstall(app: Application) {
+		// 最多等 5 分钟（用户可能要找一会儿菜单）
+		val deadline = System.currentTimeMillis() + 5 * 60_000
+		var sawInstalled = true
+
+		while (System.currentTimeMillis() < deadline) {
+			delay(2_000)
+			val installed = com.crsyyds.suzubot.runtime.Installer
+				.isInstalled(app, SetupFlow.Requirements.PACKAGE)
+
+			if (installed) {
+				sawInstalled = true
+				continue
 			}
 
-			_state.value = _state.value.copy(
-				botError = "已打开卸载界面。卸载完成后回到本应用，重新走一遍向导即可。"
+			// 刚发现被卸载
+			if (sawInstalled) {
+				_state.value = _state.value.copy(botError = "检测到已卸载，正在重装…")
+				delay(1_500)   // 等系统安静一下
+				val done = reinstallProtocol(app)
+				_state.value = _state.value.copy(
+					botError = if (done) {
+						"已重装协议端。请点「启动协议端」，然后重新扫码登录。"
+					} else {
+						"重装失败，请重新走一遍部署向导。"
+					},
+					picoRunning = com.crsyyds.suzubot.setup.PrivacyHelper.isPicoRunning()
+				)
+				return
+			}
+		}
+	}
+
+	/** 从 assets 取包并重装协议端。 */
+	private suspend fun reinstallProtocol(app: Application): Boolean {
+		val apk = runCatching {
+			val manifest = org.json.JSONObject(
+				app.assets.open("runtime-manifest.json").bufferedReader().use { it.readText() }
 			)
+			val downloader = com.crsyyds.suzubot.runtime.RuntimeDownloader(app, manifest)
+			val comp = downloader.component("protocol") ?: return false
+			when (val r = downloader.ensure(comp)) {
+				is com.crsyyds.suzubot.runtime.RuntimeDownloader.Result.Ok -> r.file
+				else -> null
+			}
+		}.getOrNull() ?: return false
+
+		return when (val r = com.crsyyds.suzubot.runtime.Installer
+				.installViaSession(app, apk)) {
+			is com.crsyyds.suzubot.runtime.Installer.Result.Ok -> {
+				// 等安装完成
+				for (i in 0 until 24) {
+					delay(500)
+					if (com.crsyyds.suzubot.runtime.Installer
+							.isInstalled(app, SetupFlow.Requirements.PACKAGE)) {
+						return true
+					}
+				}
+				false
+			}
+			else -> false
 		}
 	}
 

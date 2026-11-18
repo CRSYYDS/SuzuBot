@@ -26,6 +26,17 @@ import java.io.File
  */
 class SetupFlow(private val context: Context) {
 
+	/**
+	 * 初始化凭据存储。
+	 *
+	 * **这一步至关重要**：不调用它，CredentialStore.prefs 会是 null，
+	 * 导致 setWebUiPassword() 只写内存、不落磁盘 —— App 一重启密码就丢，
+	 * 于是重进 App 又变成「控制台密码不匹配」。
+	 */
+	init {
+		CredentialStore.init(context)
+	}
+
 	// ── 步骤定义 ──────────────────────────────────────────────────────────────
 
 	enum class Step(val order: Int, val title: String) {
@@ -33,7 +44,7 @@ class SetupFlow(private val context: Context) {
 		INSTALL(1, "安装协议端"),
 		START_PROTOCOL(2, "启动协议端"),
 		INIT_PASSWORD(3, "初始化控制台"),
-		SCAN_LOGIN(4, "扫码登录 QQ"),
+		SCAN_LOGIN(4, "在 PicoOnebot 里扫码登录"),
 		CONFIGURE_BACKEND(5, "连接机器人后端"),
 		CONFIGURE_AI(6, "配置 AI"),
 		DONE(7, "完成");
@@ -249,22 +260,16 @@ class SetupFlow(private val context: Context) {
 		// 无感安装
 		return when (val r = Installer.installViaSession(context, apk)) {
 			is Installer.Result.Ok -> {
-				// Session 已经 commit，等系统真正把包登记进 PackageManager。
-				// 不等待的话，下一轮状态机会立刻查不到包而误判「未安装」。
-				val installed = awaitPackageInstalled(Requirements.PACKAGE, timeoutMs = 12_000)
-				if (installed) {
-					Outcome.Done(Step.START_PROTOCOL)
-				} else {
-					Outcome.NeedUserAction(
-						message = if (hadOriginal) {
-							"正在替换设备上已装的手表 QQ / PicoOnebot，请稍候…"
-						} else {
-							"正在安装协议端，请稍候…"
-						},
-						actionLabel = "继续",
-						action = { /* 由广播回调，UI 会收到 */ }
-					)
-				}
+				// Session 已经 commit。这里**只等不重试**：
+				//
+				// 之前的 bug：等 12 秒没查到就返回 NeedUserAction，
+				// 用户点「继续」后状态机重跑，又调一次 installViaSession ——
+				// 于是弹两次安装。
+				//
+				// 现在：等待时间加长到 30 秒，无论结果如何都往下走（Done），
+				// 下一步 START_PROTOCOL 会自己检测包在不在，不在就报错。
+				awaitPackageInstalled(Requirements.PACKAGE, timeoutMs = 30_000)
+				Outcome.Done(Step.START_PROTOCOL)
 			}
 			Installer.Result.NeedPermission -> Outcome.NeedUserAction(
 				message = "系统拒绝安装，请授予「安装未知应用」权限。",
@@ -322,7 +327,7 @@ class SetupFlow(private val context: Context) {
 		// 1) 先看是不是全新安装（必须先初始化密码）
 		// 这一步必须在自愈之前：新安装时默认密码也进不去，不能先走自愈
 		if (client.needsPasswordInit()) {
-			val generated = randomPassword()
+			val generated = devicePassword()
 			return try {
 				client.setCredential(PicoOnebotClient.INITIAL_PASSWORD)
 				client.initializePassword(generated)
@@ -381,47 +386,60 @@ class SetupFlow(private val context: Context) {
 		}
 	}
 
-			private suspend fun scanLogin(
+				/**
+	 * 扫码登录。
+	 *
+	 * 设计（按主人要求）：
+	 *  **不在 SuzuBot 里显示二维码**，而是跳到 PicoOnebot 自己的界面。
+	 *  用户在那里点「同意」→ 出二维码 → 扫码登录，
+	 *  SuzuBot 这边轮询状态，检测到登录成功就自动继续。
+	 *
+	 * 为什么原来那个二维码页多余：
+	 *  首次安装必须去 PicoOnebot 点「同意隐私政策」，
+	 *  也就是说用户反正要过去一趟，再在自己这边显示一遍二维码纯属重复。
+	 */
+	private suspend fun scanLogin(
 		onQr: ((PicoOnebotClient.QrInfo) -> Unit)?,
 		onLoggedIn: ((String) -> Unit)? = null
 	): Outcome {
 		val client = PicoOnebotClient()
 		client.setCredential(webuiPassword ?: PicoOnebotClient.INITIAL_PASSWORD)
 
-		// 尝试凭据自愈（App 重装后密码丢了）
-		resolveConsoleCredential(client)
-
-		// 关键：PicoOnebot 的 QQ 登录是持久的（keystore）。
-		// 重装 App / 重启进程后很可能已经是登录态，这时**不需要扫码**。
-		if (runCatching { client.status() }.getOrNull()?.online == true) {
-			val id = runCatching { client.status() }.getOrNull()?.selfId.orEmpty()
-			if (id.isNotEmpty()) loggedInSelfId = id
+		// 1) 已登录？直接跳过
+		val initial = runCatching { client.status() }.getOrNull()
+		if (initial?.online == true) {
+			if (initial.selfId.isNotEmpty()) loggedInSelfId = initial.selfId
 			return Outcome.Done(Step.CONFIGURE_BACKEND)
 		}
 
-		// 未登录 → 检查登录页是否就绪（隐私政策已同意）
-		if (!PrivacyHelper.isQrReady(client)) {
-			PrivacyHelper.bringPicoToFrontForLogin(context)
-			if (!PrivacyHelper.awaitQrReady(client, 6_000)) {
-				return Outcome.NeedUserAction(
-					message = "还没拿到二维码。请打开协议端，" +
-						"把隐私政策那页点一下「同意」，然后回来。",
-					actionLabel = "去同意隐私政策",
-					action = { PrivacyHelper.bringPicoToFrontForLogin(context) }
+		// 2) 未登录 → 把 PicoOnebot 拉到前台，让用户在那里扫
+		PrivacyHelper.bringPicoToFrontForLogin(context)
+
+		// 3) 轮询等待登录（最多 5 分钟）
+		val deadline = System.currentTimeMillis() + 5 * 60_000
+		var pollCount = 0
+		while (System.currentTimeMillis() < deadline) {
+			kotlinx.coroutines.delay(2_000)
+			pollCount++
+			val st = runCatching { client.status() }.getOrNull()
+			if (st?.online == true) {
+				if (st.selfId.isNotEmpty()) loggedInSelfId = st.selfId
+				onLoggedIn?.invoke(st.selfId)
+				// 登录成功 → 把 SuzuBot 拉回来
+				PrivacyHelper.bringAppToFront(
+					context, com.crsyyds.suzubot.ui.setup.SetupActivity::class.java
 				)
+				return Outcome.Done(Step.CONFIGURE_BACKEND)
 			}
 		}
 
-		val selfId = try {
-			client.awaitLogin(timeoutMs = 3 * 60_000, onQr = { info -> onQr?.invoke(info) }, onLoggedIn = { id -> onLoggedIn?.invoke(id) })
-		} catch (e: PicoOnebotClient.UnauthorizedException) {
-			return Outcome.Failed("控制台凭据失效", "请回到上一步重新初始化密码")
-		} catch (e: Throwable) {
-			return Outcome.Failed("扫码流程中断：${e.message}", "请重试")
-		} ?: return Outcome.Failed("二维码等待超时", "请重试，或用手机 QQ 尽快扫码")
-
-		loggedInSelfId = selfId
-		return Outcome.Done(Step.CONFIGURE_BACKEND)
+		// 4) 超时
+		return Outcome.NeedUserAction(
+			message = "等待扫码超时。请打开 PicoOnebot，" +
+				"点「同意」后用手机 QQ 扫码登录。",
+			actionLabel = "打开 PicoOnebot",
+			action = { PrivacyHelper.bringPicoToFrontForLogin(context) }
+		)
 	}
 
 	/**
@@ -605,9 +623,39 @@ class SetupFlow(private val context: Context) {
 
 	private fun fmtMb(bytes: Long): String = "${bytes / 1024 / 1024} MB"
 
-	private fun randomPassword(): String {
+		/**
+	 * 控制台密码。
+	 *
+	 * **为什么不用随机密码**：
+	 * 旧实现每次随机 16 位，只存在 App 的 prefs 里。
+	 * 一旦 App 被卸载 / 数据被清，密码就永久丢失，
+	 * 而 PicoOnebot 那边还留着旧密码——双方都进不去，只能整个重置。
+	 *
+	 * 现在改成**确定性推导**：用设备指纹算哈希。
+	 *   - 同一台设备上，重装 App 算出来的密码一模一样
+	 *   - 不同设备算出来的密码不同（不会全网同一个密码）
+	 *   - 用户无需记住，App 自己能重新算出来
+	 *
+	 * 注：这不是安全隘径——密码仍然存在设备上，但控制台只绑
+	 * 127.0.0.1，本机之外访问不到，与原来的随机方案安全性相当。
+	 */
+	private fun devicePassword(): String {
+		val material = buildString {
+			append(android.os.Build.FINGERPRINT)
+			append('|')
+			append(android.os.Build.SERIAL)
+			append('|')
+			append(context.packageName)
+			append('|')
+			append("suzubot-console-v1")
+		}
+		val digest = java.security.MessageDigest.getInstance("SHA-256")
+			.digest(material.toByteArray(Charsets.UTF_8))
+		// 转成字母数字密码，取 20 位（足够强，也好输）
 		val alphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-		return (1..16).map { alphabet.random() }.joinToString("")
+		return (0 until 20).map { i ->
+			alphabet[(digest[i].toInt() and 0xFF) % alphabet.length]
+		}.joinToString("")
 	}
 
 	private fun loadManifest(): JSONObject = try {

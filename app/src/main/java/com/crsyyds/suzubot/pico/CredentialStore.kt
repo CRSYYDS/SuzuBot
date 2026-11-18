@@ -22,43 +22,67 @@ object CredentialStore {
 
 	@Volatile private var cachedWebUi: String? = null
 	private var prefs: SharedPreferences? = null
+	private var appContext: Context? = null
 
+	/**
+	 * 初始化。
+	 *
+	 * 可以被多次调用（幂等）。如果忘了调，[ensurePrefs] 会用 appContext 兜底。
+	 */
 	fun init(context: Context) {
+		val ctx = context.applicationContext ?: context
+		appContext = ctx
 		if (prefs == null) {
-			prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-			cachedWebUi = prefs?.getString(KEY_WEBUI, null)
+			prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+			cachedWebUi = ensurePrefs()?.getString(KEY_WEBUI, null)
 		}
+	}
+
+	/** 懒初始化：万一某处忘了 init，这里补上。 */
+	private fun ensurePrefs(): SharedPreferences? {
+		if (prefs == null) {
+			appContext?.let { init(it) }
+		}
+		if (prefs == null) {
+			// 最后兜底：从 App 类拿全局 context
+			runCatching {
+				val cls = Class.forName("com.crsyyds.suzubot.App")
+				val inst = cls.getDeclaredMethod("getInstance").invoke(null) as? Context
+				inst?.let { init(it) }
+			}
+		}
+		return prefs
 	}
 
 	/** 当前控制台密码（可能为 null）。 */
 	val webUiPassword: String?
-		get() = cachedWebUi ?: prefs?.getString(KEY_WEBUI, null)
+		get() = cachedWebUi ?: ensurePrefs()?.getString(KEY_WEBUI, null)
 
 	/** 最近一次验证成功的密码。 */
 	val lastGoodPassword: String?
-		get() = prefs?.getString(KEY_LAST_GOOD, null)
+		get() = ensurePrefs()?.getString(KEY_LAST_GOOD, null)
 
 	/** 写入密码（同时更新内存缓存与磁盘）。 */
 	fun setWebUiPassword(pwd: String) {
 		cachedWebUi = pwd
-		prefs?.edit()?.putString(KEY_WEBUI, pwd)?.apply()
+		ensurePrefs()?.edit()?.putString(KEY_WEBUI, pwd)?.apply()
 	}
 
 	/** 记录一个验证成功的密码。 */
 	fun markGood(pwd: String) {
 		setWebUiPassword(pwd)
-		prefs?.edit()?.putString(KEY_LAST_GOOD, pwd)?.apply()
+		ensurePrefs()?.edit()?.putString(KEY_LAST_GOOD, pwd)?.apply()
 	}
 
 	fun clear() {
 		cachedWebUi = null
-		prefs?.edit()?.clear()?.apply()
+		ensurePrefs()?.edit()?.clear()?.apply()
 	}
 
 	var backendToken: String?
-		get() = prefs?.getString(KEY_BACKEND_TOKEN, null)
+		get() = ensurePrefs()?.getString(KEY_BACKEND_TOKEN, null)
 		set(value) {
-			prefs?.edit()?.putString(KEY_BACKEND_TOKEN, value)?.apply()
+			ensurePrefs()?.edit()?.putString(KEY_BACKEND_TOKEN, value)?.apply()
 		}
 
 	/**

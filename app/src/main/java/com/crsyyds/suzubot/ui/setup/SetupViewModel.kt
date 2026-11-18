@@ -86,19 +86,7 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
 							progressText = "${mb(done)} / ${mb(total)}"
 						)
 					},
-					onQr = { info ->
-						val bmp = info.decodeImage()
-						_state.value = _state.value.copy(
-							qrBitmap = bmp ?: _state.value.qrBitmap,
-							qrCountdown = info.expiresIn,
-							qrScanned = info.scanned,
-							message = when {
-								info.scanned -> "已扫码，请在手机上点「确认登录」"
-								info.expiresIn in 1..15 -> "二维码即将过期…"
-								else -> "请用手机 QQ 扫描下方二维码"
-							}
-						)
-					},
+
 					onLoggedIn = { id ->
 						_state.value = _state.value.copy(
 							message = "登录成功（$id），正在返回…",

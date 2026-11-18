@@ -13,6 +13,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -112,10 +113,13 @@ class BotEngine(
 	}
 
 	fun stop() {
+		// 先取消所有协程，防止 scope 泄漏
+		// （BotRuntime 重建引擎时，旧 scope 会一直活到进程结束）
+		runCatching { scope.cancel() }
 		tickJob?.cancel()
 		scheduler.shutdown()
-		sessions.saveAll()
-		persistMemory()
+		runCatching { sessions.saveAll() }
+		runCatching { persistMemory() }
 		bot.stop()
 	}
 
