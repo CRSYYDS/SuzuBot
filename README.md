@@ -196,5 +196,6 @@ app/src/main/java/com/crsyyds/suzubot/
 
 如果这两个项目帮到你，请给它们点个 star ⭐ 谢谢喵~
 
-##
+## bug反馈
+可以直接github提issue 也可以发邮件到crsyyds@crsyyds.top 感谢大家的支持与反馈喵~ 一定要记得备注手机机型 方便我找原因qvq
 
