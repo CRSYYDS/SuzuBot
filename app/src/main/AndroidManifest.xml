@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+	xmlns:tools="http://schemas.android.com/tools">
+
+	<!-- 网络：下载运行时组件、连本机 PicoOnebot 控制台 -->
+	<uses-permission android:name="android.permission.INTERNET" />
+	<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+	<!-- 前台服务保活（Android 7 无强制类型；14+ 需要类型声明，这里给 dataSync） -->
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+	<uses-permission
+		android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"
+		tools:ignore="ProtectedPermissions" />
+
+	<!-- 通知（Android 13+ 需运行时申请） -->
+	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+	<!-- 旧版外部存储：Android 9 及以下直接写 Download 目录用 -->
+	<uses-permission
+		android:name="android.permission.READ_EXTERNAL_STORAGE"
+		android:maxSdkVersion="32" />
+	<uses-permission
+		android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+		android:maxSdkVersion="28" />
+
+	<!--
+		安装 APK 权限：Android 8+ 需用户手动授予「安装未知应用」，
+		这里声明后可在代码里用 ACTION_MANAGE_UNKNOWN_APP_SOURCES 引导。
+	-->
+	<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+	<!--
+		关键：手表 QQ 只有 armeabi-v7a 原生库。
+		不写 <uses-sdk> 的 abiFilters，让系统自己按兼容性筛；
+		安装了 PicoOnebot 的设备必须保留 32 位运行能力。
+	-->
+	<uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+	<application
+		android:name=".App"
+		android:allowBackup="false"
+		android:dataExtractionRules="@xml/data_extraction_rules"
+		android:fullBackupContent="false"
+		android:icon="@mipmap/ic_launcher"
+		android:label="@string/app_name"
+		android:roundIcon="@mipmap/ic_launcher_round"
+		android:supportsRtl="true"
+		android:theme="@style/Theme.SuzuBot"
+		android:usesCleartextTraffic="true"
+		tools:targetApi="34">
+
+		<!-- 引导页是第一入口；已完成过引导则跳主页 -->
+		<activity
+			android:name=".ui.setup.SetupActivity"
+			android:exported="true"
+			android:label="@string/app_name"
+			android:theme="@style/Theme.SuzuBot"
+			android:windowSoftInputMode="adjustResize">
+			<intent-filter>
+				<action android:name="android.intent.action.MAIN" />
+				<category android:name="android.intent.category.LAUNCHER" />
+			</intent-filter>
+		</activity>
+
+		<!-- 主页（状态 / 日志 / 设置） -->
+		<activity
+			android:name=".ui.home.HomeActivity"
+			android:exported="false"
+			android:label="@string/app_name"
+			android:theme="@style/Theme.SuzuBot" />
+
+		<!-- PackageInstaller 安装结果回执 -->
+		<receiver
+			android:name=".runtime.InstallResultReceiver"
+			android:exported="false">
+			<intent-filter>
+				<action android:name="android.intent.action.INSTALL_PACKAGE" />
+			</intent-filter>
+		</receiver>
+
+		<!-- 模型配置 -->
+		<activity
+			android:name=".ui.models.ModelsActivity"
+			android:exported="false"
+			android:label="模型配置"
+			android:windowSoftInputMode="adjustResize" />
+
+		<!-- 人设编辑 -->
+		<activity
+			android:name=".ui.persona.PersonaActivity"
+			android:exported="false"
+			android:label="机器人人设"
+			android:windowSoftInputMode="adjustResize" />
+
+		<!-- 给系统安装器提供 APK 的 FileProvider -->
+		<provider
+			android:name="androidx.core.content.FileProvider"
+			android:authorities="${applicationId}.fileprovider"
+			android:exported="false"
+			android:grantUriPermissions="true">
+			<meta-data
+				android:name="android.support.FILE_PROVIDER_PATHS"
+				android:resource="@xml/file_paths" />
+		</provider>
+
+		<!-- 前台服务：保活 + PicoOnebot 看护 -->
+		<service
+			android:name=".service.BotService"
+			android:exported="false"
+			android:foregroundServiceType="dataSync" />
+
+	</application>
+
+</manifest>

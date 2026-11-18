@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+	FileProvider 路径：把运行时下载的 APK 交给系统安装器。
+	只暴露 files 子目录，不暴露整个内部存储。
+-->
+<paths>
+	<files-path name="runtime" path="runtime/" />
+	<files-path name="root_files" path="." />
+	<cache-path name="cache" path="." />
+</paths>

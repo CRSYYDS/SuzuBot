@@ -1,0 +1,29 @@
+*.iml
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+
+# 构建产物
+/build
+/app/build
+/dist/
+/shots/
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# 打包产物与签名（绝不提交）
+*.apk
+*.aab
+*.keystore
+*.jks
+*.p12
+*.pem
+
+# 调试与临时
+*.log
+*.hprof
+.kotlin/
+crash-*.txt
