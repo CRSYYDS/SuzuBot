@@ -215,15 +215,35 @@ class MemoryPool(
 		 * 把文本切成打分词元：小写化 → 按空白切 → 剥首尾标点 → 停用词过滤；
 		 * CJK 段额外产出字符 bigram。
 		 */
+		/**
+		 * 分词。
+		 *
+		 * 修正了三个实测发现的 bug：
+		 *  1. 联字符（deepseek-flash）没被拆开 → 搜「deepseek」搜不到
+		 *  2. 单字 CJK（猫）不在 bigram 里 → 搜「猫」搜不到
+		 *  3. 整串被当成一个 token → 稀释打分
+		 */
 		fun tokenize(text: String): Set<String> {
 			val tokens = HashSet<String>()
-			for (raw in text.lowercase().split(Regex("\\s+"))) {
+			// 先按非字母非数字切（包括 - _ . : 等），
+			// 这样 "deepseek-flash" 会拆成 ["deepseek", "flash"]
+			for (raw in text.lowercase().split(Regex("[^\\p{L}\\p{N}]+"))) {
 				if (raw.isEmpty()) continue
-				val clean = raw.trim { !it.isLetterOrDigit() }
-				if (clean.isEmpty() || clean in ENGLISH_STOPWORDS) continue
-				tokens.add(clean)
-				for (bg in cjkBigrams(clean)) {
-					if (bg !in CJK_STOPWORDS) tokens.add(bg)
+				if (raw in ENGLISH_STOPWORDS) continue
+				tokens.add(raw)
+				// CJK 段额外产出 bigram（不拿整串，避免稀释）
+				val bigrams = cjkBigrams(raw)
+				if (bigrams.isNotEmpty()) {
+					for (bg in bigrams) {
+						if (bg !in CJK_STOPWORDS) tokens.add(bg)
+					}
+					// 对多字 CJK 段，单字也放入（使「猫」匹配「喜欢猫」）
+					if (raw.length > 1 && raw.all(::isCjk)) {
+						for (ch in raw) {
+							val s1 = ch.toString()
+							if (s1 !in CJK_STOPWORDS) tokens.add(s1)
+						}
+					}
 				}
 			}
 			return tokens

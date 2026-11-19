@@ -62,27 +62,34 @@ object CredentialStore {
 	val lastGoodPassword: String?
 		get() = ensurePrefs()?.getString(KEY_LAST_GOOD, null)
 
-	/** 写入密码（同时更新内存缓存与磁盘）。 */
+	/**
+	 * 写入密码（同时更新内存缓存与磁盘）。
+	 *
+	 * 这里用 commit() 而不是 apply()：
+	 * 凭据必须**保证**落盘。apply() 是异步的，如果进程紧接着被系统杀掉，
+	 * 写入可能丢失 —— 那正是「密码不匹配」bug 的另一种表现形式。
+	 * 密码写入频率极低（装一次 App 才写一次），同步开销可以忽略。
+	 */
 	fun setWebUiPassword(pwd: String) {
 		cachedWebUi = pwd
-		ensurePrefs()?.edit()?.putString(KEY_WEBUI, pwd)?.apply()
+		ensurePrefs()?.edit()?.putString(KEY_WEBUI, pwd)?.commit()
 	}
 
 	/** 记录一个验证成功的密码。 */
 	fun markGood(pwd: String) {
 		setWebUiPassword(pwd)
-		ensurePrefs()?.edit()?.putString(KEY_LAST_GOOD, pwd)?.apply()
+		ensurePrefs()?.edit()?.putString(KEY_LAST_GOOD, pwd)?.commit()
 	}
 
 	fun clear() {
 		cachedWebUi = null
-		ensurePrefs()?.edit()?.clear()?.apply()
+		ensurePrefs()?.edit()?.clear()?.commit()
 	}
 
 	var backendToken: String?
 		get() = ensurePrefs()?.getString(KEY_BACKEND_TOKEN, null)
 		set(value) {
-			ensurePrefs()?.edit()?.putString(KEY_BACKEND_TOKEN, value)?.apply()
+			ensurePrefs()?.edit()?.putString(KEY_BACKEND_TOKEN, value)?.commit()
 		}
 
 	/**

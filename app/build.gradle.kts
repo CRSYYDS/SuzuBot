@@ -34,7 +34,7 @@ android {
 
 		// versionName 是给人看的语义化版本；
 		// versionCode 用构建时间戳，保证每次构建唯一（避免 ColorOS 报「已安装相同版本」）
-		versionName = "1.1.3"
+		versionName = "1.1.4"
 		versionCode = (System.currentTimeMillis() / 60_000L).toInt()
 
 		vectorDrawables { useSupportLibrary = true }
@@ -82,6 +82,14 @@ android {
 	buildFeatures {
 		compose = true
 		buildConfig = true
+	}
+
+	testOptions {
+		unitTests {
+			// 让 Robolectric 能读取资源与 assets
+			isIncludeAndroidResources = true
+			isReturnDefaultValues = true
+		}
 	}
 
 	// assets 里的 APK 不做压缩：
@@ -135,4 +143,12 @@ dependencies {
 	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
 	debugImplementation("androidx.compose.ui:ui-tooling")
+
+	// ── 单元测试 ──────────────────────────────────────────────────────────────
+	testImplementation("junit:junit:4.13.2")
+	testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+	// Robolectric：在 JVM 上跑 Android 代码，不需要真机/模拟器
+	testImplementation("org.robolectric:robolectric:4.13")
+	testImplementation("androidx.test:core:1.6.1")
+	testImplementation("androidx.test.ext:junit:1.2.1")
 }
