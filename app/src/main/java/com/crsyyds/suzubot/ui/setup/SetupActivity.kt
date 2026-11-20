@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -36,17 +37,24 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.crsyyds.suzubot.setup.SetupFlow
@@ -149,6 +157,11 @@ class SetupActivity : ComponentActivity() {
 						state = state,
 						onAction = viewModel::onAction,
 						onRetry = viewModel::resumeAfterUserAction,
+						onSubmitExternalPassword = { pwd ->
+							// 只走内存：交给 ViewModel 转给 SetupFlow 校验并持久化，
+							// UI 侧不写 prefs、不写日志、不进 Bundle。
+							viewModel.run(externalConsolePassword = pwd)
+						},
 						onFinish = {
 							com.crsyyds.suzubot.service.BotService.start(this@SetupActivity)
 							startActivity(
@@ -205,6 +218,7 @@ private fun SetupScreen(
 	state: SetupUiState,
 	onAction: () -> Unit,
 	onRetry: () -> Unit,
+	onSubmitExternalPassword: (String) -> Unit,
 	onFinish: () -> Unit
 ) {
 	Column(
@@ -222,9 +236,9 @@ private fun SetupScreen(
 				.weight(1f)
 				.verticalScroll(rememberScrollState())
 		) {
-			StepCard(state)
+			StepCard(state, onSubmitExternalPassword)
 			Spacer(Modifier.height(16.dp))
-			StepList(state.step)
+			StepList(state)
 		}
 
 		BottomBar(state, onAction, onRetry, onFinish)
@@ -249,7 +263,7 @@ private fun Header(state: SetupUiState) {
 			Column {
 				Text("SuzuBot", style = MaterialTheme.typography.titleLarge)
 				Text(
-					"部署向导 · ${state.step.order + 1}/${SetupFlow.Step.total}",
+					"部署向导 · ${state.stepNumber}/${state.pathTotal}",
 					style = MaterialTheme.typography.bodySmall,
 					color = MaterialTheme.colorScheme.onSurfaceVariant
 				)
@@ -267,7 +281,10 @@ private fun Header(state: SetupUiState) {
 }
 
 @Composable
-private fun StepCard(state: SetupUiState) {
+private fun StepCard(
+	state: SetupUiState,
+	onSubmitExternalPassword: (String) -> Unit
+) {
 	PclCard(
 		accent = when (state.phase) {
 			SetupUiState.Phase.Error -> PclErr
@@ -278,7 +295,7 @@ private fun StepCard(state: SetupUiState) {
 	) {
 		Column(modifier = Modifier.padding(20.dp)) {
 			Text(
-				state.step.title,
+				state.stepTitle,
 				style = MaterialTheme.typography.titleLarge,
 				color = MaterialTheme.colorScheme.onSurface
 			)
@@ -287,7 +304,7 @@ private fun StepCard(state: SetupUiState) {
 			when (state.phase) {
 				SetupUiState.Phase.Running -> RunningBody(state)
 				SetupUiState.Phase.WaitingUser -> WaitingBody(state)
-				SetupUiState.Phase.Error -> ErrorBody(state)
+				SetupUiState.Phase.Error -> ErrorBody(state, onSubmitExternalPassword)
 				SetupUiState.Phase.Finished -> FinishedBody()
 				SetupUiState.Phase.Idle -> IdleBody()
 			}
@@ -345,7 +362,10 @@ private fun WaitingBody(state: SetupUiState) {
 }
 
 @Composable
-private fun ErrorBody(state: SetupUiState) {
+private fun ErrorBody(
+	state: SetupUiState,
+	onSubmitExternalPassword: (String) -> Unit
+) {
 	Text(
 		state.message,
 		style = MaterialTheme.typography.bodyMedium,
@@ -374,6 +394,71 @@ private fun ErrorBody(state: SetupUiState) {
 			}
 		}
 	}
+
+	// 外部运行时（纯 64 位设备）的特殊兜底：
+	// 「初始化控制台」失败往往是因为虚拟机里的 PicoOnebot 早就设过自己的控制台密码，
+	// 而本机既没有本地记录也猜不到默认值。这时只多给一个手填入口，
+	// 密码本身交给 SetupFlow 校验并持久化，UI 不落盘、不进 Bundle、不写日志。
+	if (state.externalRuntime && state.step == SetupFlow.Step.INIT_PASSWORD) {
+		Spacer(Modifier.height(12.dp))
+		ExternalConsolePasswordField(onSubmitExternalPassword)
+	}
+}
+
+/**
+ * 外部运行时的控制台密码输入。
+ *
+ * 密码只保存在 Compose 的**非 saveable** 内存状态里（[remember]，不是 rememberSaveable），
+ * 所以不会随进程重建写进 Bundle；提交后由 ViewModel 直接转交 SetupFlow。
+ */
+@Composable
+private fun ExternalConsolePasswordField(onSubmit: (String) -> Unit) {
+	var pwd by remember { mutableStateOf("") }
+	val canSubmit = pwd.isNotEmpty()
+
+	Column(modifier = Modifier.fillMaxWidth()) {
+		Text(
+			"外接运行时：填写 PicoOnebot 控制台密码",
+			style = MaterialTheme.typography.labelLarge,
+			color = MaterialTheme.colorScheme.onSurface
+		)
+		Spacer(Modifier.height(4.dp))
+		Text(
+			"如果在这个虚拟机的 PicoOnebot 里已经设过控制台密码，在这里填一次即可，" +
+				"校验通过后会自动记住，不用再填。",
+			style = MaterialTheme.typography.bodySmall,
+			color = MaterialTheme.colorScheme.onSurfaceVariant
+		)
+		Spacer(Modifier.height(8.dp))
+		OutlinedTextField(
+			value = pwd,
+			onValueChange = { pwd = it },
+			singleLine = true,
+			modifier = Modifier.fillMaxWidth(),
+			shape = RoundedCornerShape(10.dp),
+			label = { Text("控制台密码", style = MaterialTheme.typography.bodySmall) },
+			visualTransformation = PasswordVisualTransformation(),
+			keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+			colors = OutlinedTextFieldDefaults.colors(
+				focusedBorderColor = MaterialTheme.colorScheme.primary,
+				unfocusedBorderColor = MaterialTheme.colorScheme.outline
+			),
+			textStyle = MaterialTheme.typography.bodyMedium
+		)
+		Spacer(Modifier.height(8.dp))
+		OutlinedButton(
+			onClick = {
+				// 原样提交，UI 不做 trim / 不补默认值：
+				// 归一化与候选表都在 SetupFlow 里，这里悄悄改字符只会让校验更难查。
+				onSubmit(pwd)
+			},
+			enabled = canSubmit,
+			modifier = Modifier
+				.fillMaxWidth()
+				.height(44.dp),
+			shape = RoundedCornerShape(12.dp)
+		) { Text("提交密码并重试") }
+	}
 }
 
 @Composable
@@ -391,13 +476,15 @@ private fun FinishedBody() {
 
 /** 步骤清单：已完成打勾，当前高亮，未开始灰。 */
 @Composable
-private fun StepList(current: SetupFlow.Step) {
-	val steps = SetupFlow.Step.values().filter { it != SetupFlow.Step.DONE }
+private fun StepList(state: SetupUiState) {
+	val steps = state.pathSteps
+	val current = state.displayStep
+	val externalFinished = state.externalRuntime && state.phase == SetupUiState.Phase.Finished
 	PclCard {
 		Column {
 			steps.forEachIndexed { idx, s ->
-				val done = s.order < current.order
-				val active = s == current
+				val done = externalFinished || s.order < current.order
+				val active = !done && s == current
 				Row(
 					modifier = Modifier
 						.fillMaxWidth()
@@ -430,7 +517,7 @@ private fun StepList(current: SetupFlow.Step) {
 					}
 					Spacer(Modifier.width(12.dp))
 					Text(
-						s.title,
+						setupStepTitle(s, state.externalRuntime),
 						style = MaterialTheme.typography.bodyMedium,
 						color = when {
 							active -> MaterialTheme.colorScheme.onSurface

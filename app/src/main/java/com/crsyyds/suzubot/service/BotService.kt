@@ -13,6 +13,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.crsyyds.suzubot.backend.BotRuntime
 import com.crsyyds.suzubot.pico.PicoOnebotClient
+import com.crsyyds.suzubot.runtime.PicoRuntimeMode
 import com.crsyyds.suzubot.setup.SetupFlow
 import com.crsyyds.suzubot.ui.home.HomeActivity
 import kotlinx.coroutines.CoroutineScope
@@ -69,16 +70,18 @@ class BotService : Service() {
 		val flow = SetupFlow(this)
 		val client = PicoOnebotClient()
 
-		// 凭据自愈：重装 App 会丢密码，但 PicoOnebot 里的密码还在。
-		// 用候选密码逐个试，通了就写回去。
-		val recovered = recoverCredential(client)
-		if (recovered != null) {
-			flow.webuiPassword = recovered
-			Log.i(TAG, "webui credential recovered")
-		} else {
-			client.setCredential(flow.webuiPassword ?: PicoOnebotClient.INITIAL_PASSWORD)
+		val external = PicoRuntimeMode.current() == PicoRuntimeMode.EXTERNAL_ARM64
+
+		if (!external) {
+			// 凭据自愈：重装 App 会丢密码，但 PicoOnebot 里的密码还在。
+			// 用候选密码逐个试，通了就写回去。
+			val recovered = recoverCredential(client)
+			if (recovered != null) {
+				flow.webuiPassword = recovered
+				Log.i(TAG, "webui credential recovered")
+			}
+			client.setCredential(recovered ?: flow.webuiPassword ?: PicoOnebotClient.INITIAL_PASSWORD)
 		}
-		client.setCredential(recovered ?: flow.webuiPassword ?: PicoOnebotClient.INITIAL_PASSWORD)
 		var failCount = 0
 		var lastRestartAt = 0L
 		var lastConfigFixAt = 0L
@@ -90,24 +93,25 @@ class BotService : Service() {
 			if (consoleAlive) {
 				failCount = 0
 
-				// 控制台活着，但 OneBot 端口可能没开（PicoOnebot 重启后配置会丢）
-				if (!portAlive(ONEBOT_PORT)) {
+				val oneBotAlive = portAlive(ONEBOT_PORT)
+				if (!external && !oneBotAlive) {
 					val now = System.currentTimeMillis()
-					// 30 秒内最多修一次，避免狂刷 API
 					if (now - lastConfigFixAt > 30_000) {
 						lastConfigFixAt = now
 						val ok = ensureOneBotServer(client)
 						Log.i(TAG, "re-apply OneBot ws config: $ok")
 						if (!ok) {
-							// 常见原因：控制台密码与我们记录的不一致
 							Log.w(TAG, "config failed; 密码可能不匹配，请在主页重新配置")
 						}
 					}
 				}
-				updateNotification(botSummary())
+				updateNotification(if (external && !oneBotAlive) "协议端在线 · OneBot 3001 未监听" else botSummary())
 			} else {
 				failCount++
-				updateNotification("协议端未响应（第 $failCount 次）")
+				updateNotification(
+					if (external) "外部协议端未响应（第 $failCount 次）"
+					else "协议端未响应（第 $failCount 次）"
+				)
 				// 连续 3 次（约 45 秒）判定为挂了，尝试拉起；10 分钟内最多拉一次
 				if (failCount >= 3) {
 					val now = System.currentTimeMillis()
@@ -116,7 +120,10 @@ class BotService : Service() {
 						Log.w(TAG, "协议端似乎已被杀，通知用户回 App 重启")
 						// 不主动拉起（避免把 PicoOnebot 界面带到前台），
 						// 只更新通知让用户知道。
-						updateNotification("协议端已停止，点开 App 重新启动")
+						updateNotification(
+							if (external) "外部协议端已断开，请在独立运行环境中检查"
+							else "协议端已停止，点开 App 重新启动"
+						)
 						failCount = 0
 					}
 				}

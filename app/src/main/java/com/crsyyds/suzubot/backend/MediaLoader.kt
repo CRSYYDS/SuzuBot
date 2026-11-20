@@ -66,7 +66,8 @@ object MediaLoader {
 			setRequestProperty("User-Agent", "Mozilla/5.0")
 		}
 		val bytes = try {
-			val len = conn.contentLengthLong
+			// contentLengthLong 是 API 24+；contentLength 返回 Int，图片大小远小于 2GB 够用
+			val len = conn.contentLength.toLong()
 			if (len > MAX_BYTES) {
 				Log.w(TAG, "image too large: $len bytes")
 				return null

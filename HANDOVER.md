@@ -48,10 +48,13 @@ gradle :app:assembleRelease --no-daemon --console=plain
 gradle :app:testDebugUnitTest --no-daemon --console=plain
 # 报告：app/build/reports/tests/testDebugUnitTest/index.html
 
-# 装到真机
-adb install -r -t <apk>
-# 完全卸载（注意顺序，见 §6）
-adb uninstall com.crsyyds.suzubot && adb uninstall com.tencent.qqlite
+# 装到真机（本机主用户为 0。其他设备先确认用户 ID，见 §6 第 10 条）
+adb install --user 0 -r <apk>
+# Windows 项目脚本会自动取得当前前台用户 ID。安装 test-only APK 时加 -AllowTestApk
+pwsh -File ./scripts/install-adb.ps1 -ApkPath <apk> -AdbPath <adb.exe>
+
+# 从指定用户卸载 SuzuBot（完整清理顺序见 §6）
+adb shell pm uninstall --user 0 com.crsyyds.suzubot
 ```
 
 **git 推送**：走 HTTP 代理（Shadowsocks 的 privoxy 端口会变，用 `Get-NetTCPConnection` 找 `ss_privoxy` 的端口，然后 `git config --global http.proxy http://127.0.0.1:<port>`）。Release 上传用 GitHub API + `git credential fill` 取 token。
@@ -183,7 +186,7 @@ adb uninstall com.crsyyds.suzubot && adb uninstall com.tencent.qqlite
 
 ## 6. 反复踩过的坑（务必读）
 
-1. **卸载顺序**：要彻底清干净，必须**先卸 SuzuBot 再卸 PicoOnebot**，否则 SuzuBot 检测到协议端没了会自动重装。还要检查 `/data/user_de/0/com.tencent.qqlite`（设备加密存储，普通卸载不清，密码藏这里）——`adb uninstall` 后确认 6 个数据目录都没了。
+1. **卸载顺序**：要彻底清干净，必须**先卸 SuzuBot 再卸 PicoOnebot**，否则 SuzuBot 检测到协议端没了会自动重装。还要检查 `/data/user_de/0/com.tencent.qqlite`（设备加密存储，普通卸载不清，密码藏这里）——按用户卸掉（见第 10 条）后确认 6 个数据目录都没了。
 
 2. **`?.` 静默吞失败**：`CredentialStore` 早期 `init()` 从未被调用，`prefs=null`，`prefs?.edit()?.putString(...)?.apply()` 全程静默失败，密码只进内存不落盘，App 一重启就报「密码不匹配」。修复：`App.onCreate` + `SetupFlow.init` + `ensurePrefs()` 三处初始化兜底，并改 `commit()` 同步落盘。**改代码时别再让 null 被 `?.` 吃掉**。
 
@@ -200,6 +203,17 @@ adb uninstall com.crsyyds.suzubot && adb uninstall com.tencent.qqlite
 8. **二维码页重复**：SuzuBot 里别再显示登录二维码，首次登录必须在 PicoOnebot 界面点「同意」，用户在那边扫。删掉了 `SetupActivity` 的二维码 UI，改成跳转+轮询 `/api/status`。
 
 9. **日志**：release 包 `run-as` 不可用（not debuggable）；`pm clear` 需要 `CLEAR_APP_USER_DATA`，adb 无权限。中文在 PowerShell 控制台会乱码，但那是显示问题，不影响文件。
+
+10. **ADB 安装要指定 Android 用户。** 2026-11-20 在 Android 16 的 Moto XT2537-4 上实测，运行 `adb install <apk>` 后，SuzuBot 同时注册到主用户 `0` 和应用分身 `900`、`901`。ADB 省略 `--user` 时默认安装到设备上的全部用户。后续用 §1 的项目脚本，或先用 `adb shell am get-current-user` 确认 ID，再显式传入 `--user`。 [Android ADB 文档](https://developer.android.com/tools/adb)
+
+    在这台测试机上，确认 `900`、`901` 为分身后，用下列命令移除分身里的 SuzuBot。`-k` 保留各自的数据和缓存。
+
+    ```powershell
+    adb shell pm uninstall -k --user 900 com.crsyyds.suzubot
+    adb shell pm uninstall -k --user 901 com.crsyyds.suzubot
+    ```
+
+    用 `adb shell dumpsys package com.crsyyds.suzubot` 核对各用户的 `installed` 状态。协议端与原版手表 QQ 共用 `com.tencent.qqlite` 包名，清理协议端前需要确认目标安装确实是 PicoOnebot。
 
 ---
 
@@ -219,6 +233,9 @@ adb uninstall com.crsyyds.suzubot && adb uninstall com.tencent.qqlite
 - ❌ 无崩溃上报、无灰度
 - ❌ 协议端升级需重新发 App（内置 APK 版本固定 0.16）
 - ❌ `versionCode` 用时间戳，无法上架 Google Play（本项目也不上）
+- ❌ **纯 ARM64 真机直装受限。** 2026-11-20 在 Moto XT2537-4（Android 16）实测，系统只报 `arm64-v8a`（`zygote64`、`native.bridge=0`）。主用户安装原样 PicoOnebot 0.16 返回 `INSTALL_FAILED_NO_MATCHING_ABIS`，设备上没有安装协议端。SuzuBot 的纯 ARM64 模式需要已经运行的 PicoOnebot 实例。
+- ✅ 同机覆盖安装 SuzuBot 后，向导显示「连接 PicoOnebot」及缺少运行环境的提示，清单已移除跳过的安装步骤。SuzuBot 仅安装于主用户 0。
+- ✅ **ARM32 转译基础验证。** 同一台设备上，`liba32android` 探针执行合成 ARM32 指令返回 42，并只读扫描原包里的 52 个库，扫描前后的 SHA-256 一致。上游 ELF 加载测试也通过，两个合成 ARM32 库完成依赖加载、重定位和调用，返回 123。PicoOnebot 的 Android 应用进程仍缺可用的本机运行器，扫码与收发未进入实测。
 - ⚠️ 用户真机端到端验证主要靠人工，改动 `SetupFlow` 后务必完整跑一遍 8 步
 
 ### Release 历史

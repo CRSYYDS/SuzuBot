@@ -16,12 +16,6 @@
 	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
 	<!-- 旧版外部存储：Android 9 及以下直接写 Download 目录用 -->
-	<uses-permission
-		android:name="android.permission.READ_EXTERNAL_STORAGE"
-		android:maxSdkVersion="32" />
-	<uses-permission
-		android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-		android:maxSdkVersion="28" />
 
 	<!--
 		安装 APK 权限：Android 8+ 需用户手动授予「安装未知应用」，

@@ -4,18 +4,30 @@ import android.app.Application
 import android.graphics.Bitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.crsyyds.suzubot.runtime.PicoRuntimeMode
 import com.crsyyds.suzubot.setup.SetupFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+private val nativeSteps = SetupFlow.Step.values().filter { it != SetupFlow.Step.DONE }
+private val externalSteps = nativeSteps - setOf(SetupFlow.Step.INSTALL, SetupFlow.Step.CONFIGURE_AI)
+
+internal fun setupStepTitle(step: SetupFlow.Step, externalRuntime: Boolean): String {
+	if (!externalRuntime) return step.title
+	return when (step) {
+		SetupFlow.Step.START_PROTOCOL -> "连接 PicoOnebot"
+		SetupFlow.Step.INIT_PASSWORD -> "校验控制台密码"
+		else -> step.title
+	}
+}
+
 /**
  * 引导页 UI 状态。
  */
 data class SetupUiState(
 	val step: SetupFlow.Step = SetupFlow.Step.DEVICE_CHECK,
-	val stepProgress: Float = 0f,
 	val phase: Phase = Phase.Idle,
 	val message: String = "",
 	val hint: String = "",
@@ -24,12 +36,40 @@ data class SetupUiState(
 	val progressText: String = "",
 	val qrBitmap: Bitmap? = null,
 	val qrCountdown: Int = 0,
-	val qrScanned: Boolean = false
+	val qrScanned: Boolean = false,
+
+	/**
+	 * 设备是否只能走外部运行时（纯 64 位，见 [PicoRuntimeMode.EXTERNAL_ARM64]）。
+	 *
+	 * 它决定两件事：外部路径的步骤清单 / 总数 / 进度按实际会走的步骤算，
+	 * 以及「初始化控制台」失败时给出手填密码入口。控制台密码本身**不进**这个对象。
+	 */
+	val externalRuntime: Boolean = false
 ) {
 	enum class Phase { Running, WaitingUser, Error, Idle, Finished }
 
 	val canRetry: Boolean get() = phase == Phase.Error
 	val isBusy: Boolean get() = phase == Phase.Running
+
+	val pathSteps: List<SetupFlow.Step> get() = if (externalRuntime) externalSteps else nativeSteps
+	val pathTotal: Int get() = if (externalRuntime) pathSteps.size else SetupFlow.Step.total
+
+	val displayStep: SetupFlow.Step
+		get() = if (externalRuntime) when (step) {
+			SetupFlow.Step.INSTALL -> SetupFlow.Step.START_PROTOCOL
+			SetupFlow.Step.CONFIGURE_AI -> SetupFlow.Step.CONFIGURE_BACKEND
+			else -> step
+		} else step
+
+	val stepNumber: Int
+		get() = if (displayStep == SetupFlow.Step.DONE) pathTotal else pathSteps.indexOf(displayStep) + 1
+
+	val stepTitle: String get() = setupStepTitle(displayStep, externalRuntime)
+	val stepProgress: Float
+		get() = when {
+			phase == Phase.Finished || displayStep == SetupFlow.Step.DONE -> 1f
+			else -> (stepNumber - 1).toFloat() / pathSteps.size
+		}
 }
 
 class SetupViewModel(app: Application) : AndroidViewModel(app) {
@@ -56,21 +96,26 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
 	init {
 		_state.value = _state.value.copy(
 			step = flow.currentStep,
-			stepProgress = stepProgress(flow.currentStep)
+			externalRuntime = PicoRuntimeMode.current() == PicoRuntimeMode.EXTERNAL_ARM64
 		)
 	}
 
-	fun stepProgress(step: SetupFlow.Step): Float =
-		(step.order.toFloat() / (SetupFlow.Step.total - 1).toFloat()).coerceIn(0f, 1f)
-
 	fun isSetupCompleted(): Boolean = flow.isCompleted()
 
-	fun run() {
+	/**
+	 * 跑当前步骤。
+	 *
+	 * @param externalConsolePassword 外部运行时（纯 64 位设备）下用户手填的
+	 *   PicoOnebot 控制台密码。它只作为**本次调用**的参数直接转交给
+	 *   [SetupFlow.runCurrent]，由状态机负责校验与持久化；
+	 *   ViewModel 自己不保存、不写 prefs、不塞 Bundle、也不打日志。
+	 */
+	fun run(externalConsolePassword: String? = null) {
 		if (_state.value.isBusy) return
 		viewModelScope.launch {
 			_state.value = _state.value.copy(
 				phase = SetupUiState.Phase.Running,
-				message = _state.value.step.title + "…",
+				message = _state.value.stepTitle + "…",
 				hint = "",
 				actionLabel = null,
 				progress = 0f,
@@ -79,6 +124,10 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
 
 			val outcome = try {
 				flow.runCurrent(
+					// 外部运行时手填的控制台密码：原样交给状态机去校验并持久化，
+					// UI 层不落盘、不进 Bundle、不打日志。
+					externalConsolePassword = externalConsolePassword,
+
 					onProgress = { done, total ->
 						val p = if (total > 0) done.toFloat() / total.toFloat() else 0f
 						_state.value = _state.value.copy(
@@ -114,14 +163,12 @@ class SetupViewModel(app: Application) : AndroidViewModel(app) {
 					_state.value = _state.value.copy(
 						phase = SetupUiState.Phase.Finished,
 						message = "全部完成，可以开始使用了",
-						stepProgress = 1f,
 						qrBitmap = null
 					)
 				} else {
 					_state.value = _state.value.copy(
 						phase = SetupUiState.Phase.Idle,
 						step = next,
-						stepProgress = stepProgress(next),
 						message = "",
 						qrBitmap = null,
 						progress = 0f,

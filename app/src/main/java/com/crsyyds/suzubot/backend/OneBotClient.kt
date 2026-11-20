@@ -12,7 +12,7 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.Socket
 import java.security.MessageDigest
-import java.util.Base64
+import android.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -108,7 +108,12 @@ class OneBotClient(
 		s.soTimeout = 0
 		socket = s
 
-		val key = Base64.getEncoder().encodeToString(ByteArray(16).also { java.util.Random().nextBytes(it) })
+		// 用 android.util.Base64（API 8+），不能用 java.util.Base64（API 26+，Android 6/7 上会 NoSuchMethodError）
+		// NO_WRAP 必须加：否则长字符串会自动插入换行，握手头就坏了
+		val key = Base64.encodeToString(
+			ByteArray(16).also { java.util.Random().nextBytes(it) },
+			Base64.NO_WRAP
+		)
 		val path = if (accessToken.isEmpty()) "/" else "/?access_token=$accessToken"
 		val req = buildString {
 			append("GET $path HTTP/1.1\r\n")
@@ -123,8 +128,9 @@ class OneBotClient(
 
 		val input = s.getInputStream()
 		val header = readHttpHeader(input)
-		val expect = Base64.getEncoder().encodeToString(
-			MessageDigest.getInstance("SHA-1").digest((key + WS_GUID).toByteArray())
+		val expect = Base64.encodeToString(
+			MessageDigest.getInstance("SHA-1").digest((key + WS_GUID).toByteArray()),
+			Base64.NO_WRAP
 		)
 		if (!header.contains("101") || !header.contains(expect, ignoreCase = true)) {
 			throw java.io.IOException("WebSocket 握手失败: ${header.lines().firstOrNull()}")

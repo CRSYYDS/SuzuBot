@@ -226,7 +226,8 @@ class RuntimeDownloader(
 			if (!append && out.exists()) out.delete()
 
 			// 206 时服务端给的是剩余长度，总长 = 已下载 + 剩余
-			val serverLen = conn.contentLengthLong.takeIf { it > 0 }
+			// contentLengthLong 是 API 24+，改用 contentLength（协议端 APK < 2GB 够用）
+			val serverLen = conn.contentLength.toLong().takeIf { it > 0 }
 			val total = when {
 				serverLen == null -> expectSize
 				append -> existing + serverLen
@@ -298,7 +299,17 @@ class RuntimeDownloader(
 			file.absolutePath,
 			PackageManager.GET_META_DATA or PackageManager.GET_ACTIVITIES
 		) ?: return null
-		return info.packageName to (info.applicationInfo?.minSdkVersion ?: 0)
+		// ApplicationInfo.minSdkVersion 是 API 24+，低版本用反射兜底，拿不到就返回 0（不拦）
+		val minSdk = if (android.os.Build.VERSION.SDK_INT >= 24) {
+			info.applicationInfo?.minSdkVersion ?: 0
+		} else {
+			runCatching {
+				android.content.pm.ApplicationInfo::class.java
+					.getField("minSdkVersion")
+					.getInt(info.applicationInfo)
+			}.getOrDefault(0)
+		}
+		return info.packageName to minSdk
 	}
 
 	fun componentDir(id: String): File = File(context.filesDir, "runtime/$id").also { it.mkdirs() }

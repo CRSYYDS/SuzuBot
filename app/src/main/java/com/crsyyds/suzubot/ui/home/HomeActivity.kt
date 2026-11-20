@@ -27,11 +27,14 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -45,6 +48,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.crsyyds.suzubot.ui.components.ButtonShape
@@ -120,7 +125,8 @@ class HomeActivity : ComponentActivity() {
 						onOpenPicoUi = { openPicoUi() },
 						onStarPico = { openGithub("pico") },
 						onStarSuzu = { openGithub("suzu") },
-						onResetProtocol = vm::resetProtocol
+						onResetProtocol = vm::resetProtocol,
+						onSaveCredential = vm::saveConsoleCredential
 					)
 				}
 			}
@@ -229,7 +235,8 @@ private fun HomeScreen(
 	onOpenPicoUi: () -> Unit,
 	onStarPico: () -> Unit,
 	onStarSuzu: () -> Unit,
-	onResetProtocol: () -> Unit
+	onResetProtocol: () -> Unit,
+	onSaveCredential: (String) -> Unit
 ) {
 	Column(
 		modifier = Modifier
@@ -247,11 +254,11 @@ private fun HomeScreen(
 
 			// 协议端没跑 → 最上面放启动卡
 			if (!state.picoRunning) {
-				PicoLaunchCard(state, onLaunchPico)
+				PicoLaunchCard(state, onLaunchPico, onOpenConsole)
 				Spacer(Modifier.height(12.dp))
 			}
 
-			StatusCard(state, onResetProtocol, onOpenPicoUi)
+			StatusCard(state, onResetProtocol, onOpenPicoUi, onOpenConsole, onSaveCredential)
 			Spacer(Modifier.height(12.dp))
 			BotCard(state, onStartBot, onStopBot, onLaunchPico)
 			Spacer(Modifier.height(12.dp))
@@ -262,6 +269,7 @@ private fun HomeScreen(
 				onOpenPersona = onOpenPersona,
 				onOpenModels = onOpenModels,
 				onOpenPicoUi = onOpenPicoUi,
+				showPicoUi = !state.externalRuntime,
 				highlightModels = !state.apiKeyConfigured,
 				highlightPersona = !state.personaConfigured
 			)
@@ -298,6 +306,7 @@ private fun TopBar(state: HomeUiState, onRefresh: () -> Unit) {
 			)
 			Text(
 				when {
+					!state.picoRunning && state.externalRuntime -> "外部协议端未连接"
 					!state.picoRunning -> "协议端未运行"
 					state.botConnected -> "运行中 · 已处理 ${state.botHandled} 条"
 					else -> "协议端在线 · 后端未启动"
@@ -316,7 +325,52 @@ private fun TopBar(state: HomeUiState, onRefresh: () -> Unit) {
 // ── 协议端启动卡（关键：重进 App 后靠它拉起） ──────────────────────────────
 
 @Composable
-private fun PicoLaunchCard(state: HomeUiState, onLaunch: () -> Unit) {
+private fun PicoLaunchCard(
+	state: HomeUiState,
+	onLaunch: () -> Unit,
+	onOpenConsole: () -> Unit
+) {
+	// 外部模式：协议端不在本机，卡片不提供任何能 "启动" 它的动作
+	if (state.externalRuntime) {
+		PclCard(accent = PclWarn) {
+			SectionTitle("外部协议端未连接") {
+				StatusDot(PclWarn, "离线")
+			}
+			Spacer(Modifier.height(6.dp))
+			Text(
+				"协议端需要在你自己的独立运行环境里启动；本应用不会安装或拉起它。",
+				style = MaterialTheme.typography.bodySmall,
+				color = MaterialTheme.colorScheme.onSurfaceVariant
+			)
+			if (state.launchNotice.isNotEmpty()) {
+				Spacer(Modifier.height(6.dp))
+				Text(state.launchNotice, style = MaterialTheme.typography.bodySmall, color = PclWarn)
+			}
+			if (state.botError.isNotEmpty()) {
+				Spacer(Modifier.height(6.dp))
+				Text(state.botError, style = MaterialTheme.typography.bodySmall, color = PclErr)
+			}
+			Spacer(Modifier.height(12.dp))
+			Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+				Button(
+					onClick = onLaunch,
+					modifier = Modifier
+						.weight(1f)
+						.height(44.dp),
+					shape = ButtonShape
+				) { Text("重新检测", fontWeight = FontWeight.SemiBold) }
+				OutlinedButton(
+					onClick = onOpenConsole,
+					modifier = Modifier
+						.weight(1f)
+						.height(44.dp),
+					shape = ButtonShape
+				) { Text("打开控制台", style = MaterialTheme.typography.bodySmall) }
+			}
+		}
+		return
+	}
+
 	PclCard(accent = PclErr) {
 		SectionTitle("协议端未运行") {
 			StatusDot(PclErr, "离线")
@@ -390,7 +444,9 @@ private fun PicoLaunchCard(state: HomeUiState, onLaunch: () -> Unit) {
 private fun StatusCard(
 	state: HomeUiState,
 	onResetProtocol: () -> Unit,
-	onOpenPicoUi: () -> Unit
+	onOpenPicoUi: () -> Unit,
+	onOpenConsole: () -> Unit,
+	onSaveCredential: (String) -> Unit
 ) {
 	val online = state.status?.online == true
 	val accent = when {
@@ -429,45 +485,104 @@ private fun StatusCard(
 			state.error != null && state.picoRunning -> {
 				Column {
 					Text(
-						"协议端在跑，但控制台密码不匹配。",
+						if (state.externalRuntime) "外部协议端在跑，但控制台密码不匹配。"
+						else "协议端在跑，但控制台密码不匹配。",
 						style = MaterialTheme.typography.bodySmall,
 						color = PclWarn
 					)
 					Spacer(Modifier.height(6.dp))
-					Text(
-						"这通常是 App 重装后，本地记录的密码丢了，" +
-							"但协议端里的密码还在。" +
-							"点下方按钮重置：清空协议端数据并恢复默认密码。",
-						style = MaterialTheme.typography.bodySmall,
-						color = MaterialTheme.colorScheme.onSurfaceVariant
-					)
-					Spacer(Modifier.height(10.dp))
-					Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-						Button(
-							onClick = onResetProtocol,
-							modifier = Modifier
-								.weight(1f)
-								.height(40.dp),
-							shape = RoundedCornerShape(9.dp)
-						) {
-							Text("重置协议端数据", style = MaterialTheme.typography.bodySmall)
+
+					if (state.externalRuntime) {
+						// 外部模式：协议端不归本应用管，只提供「验证并保存本机密码」
+						Text(
+							"填入那个环境里正在用的控制台密码，验证通过后保存到本机。",
+							style = MaterialTheme.typography.bodySmall,
+							color = MaterialTheme.colorScheme.onSurfaceVariant
+						)
+						Spacer(Modifier.height(10.dp))
+						var input by remember { mutableStateOf("") }
+						OutlinedTextField(
+							value = input,
+							onValueChange = { input = it },
+							label = { Text("控制台密码", style = MaterialTheme.typography.bodySmall) },
+							singleLine = true,
+							shape = RoundedCornerShape(10.dp),
+							visualTransformation = PasswordVisualTransformation(),
+							keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+							modifier = Modifier.fillMaxWidth(),
+							colors = OutlinedTextFieldDefaults.colors(
+								focusedBorderColor = MaterialTheme.colorScheme.primary,
+								unfocusedBorderColor = MaterialTheme.colorScheme.outline
+							),
+							textStyle = MaterialTheme.typography.bodyMedium
+						)
+						if (state.credentialMessage.isNotEmpty()) {
+							Spacer(Modifier.height(6.dp))
+							Text(
+								state.credentialMessage,
+								style = MaterialTheme.typography.bodySmall,
+								color = if (state.credentialOk == true) PclOk else PclErr
+							)
 						}
-						OutlinedButton(
-							onClick = onOpenPicoUi,
-							modifier = Modifier
-								.weight(1f)
-								.height(40.dp),
-							shape = RoundedCornerShape(9.dp)
-						) {
-							Text("打开协议端", style = MaterialTheme.typography.bodySmall)
+						Spacer(Modifier.height(10.dp))
+						Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+							Button(
+								onClick = { onSaveCredential(input) },
+								enabled = !state.credentialSaving && input.isNotBlank(),
+								modifier = Modifier
+									.weight(1f)
+									.height(40.dp),
+								shape = RoundedCornerShape(9.dp)
+							) {
+								Text(
+									if (state.credentialSaving) "验证中…" else "验证并保存",
+									style = MaterialTheme.typography.bodySmall
+								)
+							}
+							OutlinedButton(
+								onClick = onOpenConsole,
+								modifier = Modifier
+									.weight(1f)
+									.height(40.dp),
+								shape = RoundedCornerShape(9.dp)
+							) { Text("打开控制台", style = MaterialTheme.typography.bodySmall) }
 						}
+					} else {
+						Text(
+							"这通常是 App 重装后，本地记录的密码丢了，" +
+								"但协议端里的密码还在。" +
+								"点下方按钮重置：清空协议端数据并恢复默认密码。",
+							style = MaterialTheme.typography.bodySmall,
+							color = MaterialTheme.colorScheme.onSurfaceVariant
+						)
+						Spacer(Modifier.height(10.dp))
+						Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+							Button(
+								onClick = onResetProtocol,
+								modifier = Modifier
+									.weight(1f)
+									.height(40.dp),
+								shape = RoundedCornerShape(9.dp)
+							) {
+								Text("重置协议端数据", style = MaterialTheme.typography.bodySmall)
+							}
+							OutlinedButton(
+								onClick = onOpenPicoUi,
+								modifier = Modifier
+									.weight(1f)
+									.height(40.dp),
+								shape = RoundedCornerShape(9.dp)
+							) {
+								Text("打开协议端", style = MaterialTheme.typography.bodySmall)
+							}
+						}
+						Spacer(Modifier.height(4.dp))
+						Text(
+							"注：重置会让 QQ 退出登录，需要重新扫码。建议先试右边的「打开协议端」看看能不能在界面里改密码。",
+							style = MaterialTheme.typography.bodySmall,
+							color = PclTextDim
+						)
 					}
-					Spacer(Modifier.height(4.dp))
-					Text(
-						"注：重置会让 QQ 退出登录，需要重新扫码。建议先试右边的「打开协议端」看看能不能在界面里改密码。",
-						style = MaterialTheme.typography.bodySmall,
-						color = PclTextDim
-					)
 				}
 			}
 
@@ -504,6 +619,7 @@ private fun BotCard(
 		Text(
 			when {
 				!state.modelsConfigured -> "还没有配置模型，请到「运维 → 模型配置」填 API Key"
+				!state.picoRunning && state.externalRuntime -> "外部协议端未连接，先去独立运行环境里启动它"
 				!state.picoRunning -> "协议端未运行，需要先启动它"
 				state.botConnected -> "已连接 OneBot · 处理 ${state.botHandled} 条"
 				else -> "已配置，点下方启动"
@@ -539,7 +655,11 @@ private fun BotCard(
 				shape = ButtonShape
 			) {
 				Text(
-					if (!state.picoRunning) "启动协议端" else "启动机器人",
+					when {
+						state.picoRunning -> "启动机器人"
+						state.externalRuntime -> "重新检测外部协议端"
+						else -> "启动协议端"
+					},
 					fontWeight = FontWeight.SemiBold
 				)
 			}
@@ -557,6 +677,8 @@ private fun ActionsCard(
 	onOpenPersona: () -> Unit,
 	onOpenModels: () -> Unit,
 	onOpenPicoUi: () -> Unit,
+	/** 外部模式没有本机协议端界面可跳，隐藏那一行 */
+	showPicoUi: Boolean,
 	/** 首次配置时高亮引导 */
 	highlightModels: Boolean,
 	highlightPersona: Boolean
@@ -583,8 +705,10 @@ private fun ActionsCard(
 				highlightText = "建议完善"
 			)
 			PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
-			ActionRow("打开 PicoOnebot 界面", "直接跳到协议端 App", onOpenPicoUi)
-			PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
+			if (showPicoUi) {
+				ActionRow("打开 PicoOnebot 界面", "直接跳到协议端 App", onOpenPicoUi)
+				PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
+			}
 			ActionRow("打开 PicoOnebot 网页控制台", "在浏览器里管理", onOpenConsole)
 			PclDivider(Modifier.padding(vertical = 2.dp), alpha = 0.6f)
 			ActionRow("放宽省电限制", "防止安卓系统杀后台", onBatterySettings)

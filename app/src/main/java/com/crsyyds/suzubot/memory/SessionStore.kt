@@ -102,7 +102,8 @@ class SessionStore(
 
 	@Synchronized
 	fun saveAll() {
-		cache.keys.toList().forEach { save(it) }
+		// cache.keys 是 KeySetView（API 24+），用 toTypedArray 规避
+		cache.keys.toTypedArray().forEach { save(it) }
 	}
 
 	@Synchronized

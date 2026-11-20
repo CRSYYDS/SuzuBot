@@ -6,12 +6,19 @@ import android.net.Uri
 import android.os.Build
 import android.os.StatFs
 import androidx.core.content.FileProvider
+import com.crsyyds.suzubot.backend.OneBotClient
 import com.crsyyds.suzubot.pico.CredentialStore
 import com.crsyyds.suzubot.pico.PicoOnebotClient
 import com.crsyyds.suzubot.runtime.Installer
+import com.crsyyds.suzubot.runtime.PicoRuntimeMode
 import com.crsyyds.suzubot.runtime.RuntimeDownloader
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -79,18 +86,32 @@ class SetupFlow(private val context: Context) {
 	private val prefs = context.getSharedPreferences("setup", Context.MODE_PRIVATE)
 	private val downloader by lazy { RuntimeDownloader(context, loadManifest()) }
 
+	private val runtimeMode = PicoRuntimeMode.current()
+	private val isExternalRuntime = runtimeMode == PicoRuntimeMode.EXTERNAL_ARM64
+
 	// ── 状态持久化 ────────────────────────────────────────────────────────────
 
+	// 外部接入单独保存进度，避免读到原生部署的完成记录。
+	private val stepKey = if (isExternalRuntime) KEY_EXTERNAL_STEP else KEY_STEP
+
+	private fun passedKey(s: Step): String =
+		(if (isExternalRuntime) EXTERNAL_PASSED_PREFIX else NATIVE_PASSED_PREFIX) + s.name
+
 	var currentStep: Step
-		get() = Step.values().getOrElse(prefs.getInt(KEY_STEP, 0)) { Step.DEVICE_CHECK }
-		private set(v) = prefs.edit().putInt(KEY_STEP, v.order).apply()
+		get() {
+			val saved = Step.values().getOrElse(prefs.getInt(stepKey, 0)) { Step.DEVICE_CHECK }
+			// 外部路径永远跳过 INSTALL：本机不装包，哪怕 prefs 里就记着它
+			return if (isExternalRuntime && saved == Step.INSTALL) Step.START_PROTOCOL else saved
+		}
+		private set(v) = prefs.edit().putInt(stepKey, v.order).apply()
 
-	private fun isPassed(s: Step): Boolean = prefs.getBoolean("passed_${s.name}", false)
+	private fun isPassed(s: Step): Boolean = prefs.getBoolean(passedKey(s), false)
 
-	private fun markPassed(s: Step) = prefs.edit().putBoolean("passed_${s.name}", true).apply()
+	private fun markPassed(s: Step) = prefs.edit().putBoolean(passedKey(s), true).apply()
 
 	fun reset() = prefs.edit().clear().apply()
 
+	/** 是否全部走完（按当前路径的键判断，外部不会读到原生那条 DONE）。 */
 	fun isCompleted(): Boolean = isPassed(Step.DONE)
 
 	var userApkPath: String?
@@ -142,17 +163,24 @@ class SetupFlow(private val context: Context) {
 
 	// ── 主入口 ────────────────────────────────────────────────────────────────
 
+	/**
+	 * 跑当前这一步。
+	 *
+	 * @param externalConsolePassword 外部模式下用户填的控制台密码，仅本次使用；
+	 *        成功才持久化。原生模式忽略。
+	 */
 	suspend fun runCurrent(
 		onProgress: ((Long, Long) -> Unit)? = null,
 		onQr: ((PicoOnebotClient.QrInfo) -> Unit)? = null,
-		onLoggedIn: ((String) -> Unit)? = null
+		onLoggedIn: ((String) -> Unit)? = null,
+		externalConsolePassword: String? = null
 	): Outcome = withContext(Dispatchers.IO) {
 		val step = currentStep
 		val outcome = when (step) {
 			Step.DEVICE_CHECK -> deviceCheck()
 			Step.INSTALL -> installProtocol()
 			Step.START_PROTOCOL -> startProtocol()
-			Step.INIT_PASSWORD -> initPassword()
+			Step.INIT_PASSWORD -> initPassword(externalConsolePassword)
 			Step.SCAN_LOGIN -> scanLogin(onQr, onLoggedIn)
 			Step.CONFIGURE_BACKEND -> configureBackend()
 			Step.CONFIGURE_AI -> configureAi()
@@ -175,20 +203,25 @@ class SetupFlow(private val context: Context) {
 	// ── 步骤实现 ──────────────────────────────────────────────────────────────
 
 	private suspend fun deviceCheck(): Outcome {
-		// 32 位能力是唯一硬门槛：手表 QQ 只有 armeabi-v7a 原生库
-		if (!RuntimeDownloader.deviceSupports32Bit()) {
-			return Outcome.Failed(
-				reason = "本设备不支持 32 位应用（${Build.SUPPORTED_ABIS.joinToString()}）",
-				hint = "手表 QQ 只提供 armeabi-v7a 原生库，PicoOnebot 依赖它。" +
-					"可改用光速虚拟机 / VMOS Pro 等自带转译层的容器运行，或在电脑模拟器里部署。"
-			)
-		}
-
+		// SDK 检查两条路径共用
 		if (Build.VERSION.SDK_INT < Requirements.MIN_SDK) {
 			return Outcome.Failed(
 				reason = "系统版本过低（Android ${Build.VERSION.RELEASE}，需 ${Requirements.MIN_SDK_NAME}+）",
 				hint = "请升级系统，或换一台 Android ${Requirements.MIN_SDK_NAME} 及以上的设备。"
 			)
+		}
+
+		when (runtimeMode) {
+			// 外部路径：没有本机装包这一说，直接去启动协议端
+			PicoRuntimeMode.EXTERNAL_ARM64 -> return Outcome.Done(Step.START_PROTOCOL)
+
+			PicoRuntimeMode.UNSUPPORTED -> return Outcome.Failed(
+				reason = "本设备没有 ARM 运行能力（${Build.SUPPORTED_ABIS.joinToString()}）",
+				hint = "PicoOnebot 依赖手表 QQ 的 armeabi-v7a 原生库，请换 ARM 设备。"
+			)
+
+			// 原生路径：32 位能力 + 装包空间是硬门槛
+			PicoRuntimeMode.NATIVE -> Unit
 		}
 
 		val free = freeBytes(context.filesDir)
@@ -209,6 +242,8 @@ class SetupFlow(private val context: Context) {
 	 * 缺权限时引导用户授权；仍失败则回落到 Intent 安装。
 	 */
 	private suspend fun installProtocol(): Outcome {
+		if (isExternalRuntime) return Outcome.Done(Step.START_PROTOCOL)
+
 		if (isPicoInstalled()) {
 			return Outcome.Done(Step.START_PROTOCOL)
 		}
@@ -295,7 +330,9 @@ class SetupFlow(private val context: Context) {
 		}
 	}
 
-			private suspend fun startProtocol(): Outcome {
+	private suspend fun startProtocol(): Outcome {
+		if (isExternalRuntime) return startProtocolExternal()
+
 		if (!isPackageInstalled(Requirements.PACKAGE)) {
 			return Outcome.Failed("PicoOnebot 尚未安装", "请返回上一步完成安装")
 		}
@@ -321,7 +358,19 @@ class SetupFlow(private val context: Context) {
 		)
 	}
 
-		private suspend fun initPassword(): Outcome {
+	private suspend fun startProtocolExternal(): Outcome {
+		if (portAlive(CONSOLE_PORT, 2_000)) return Outcome.Done(Step.INIT_PASSWORD)
+
+		return Outcome.Failed(
+			reason = "未连接到 PicoOnebot 运行环境",
+			hint = "此设备只支持 ARM64，内置的 PicoOnebot 需要 ARM32。" +
+				"请使用已运行的兼容环境，并将控制台映射到本机 $CONSOLE_HOST:$CONSOLE_PORT 后重试。"
+		)
+	}
+
+	private suspend fun initPassword(externalConsolePassword: String?): Outcome {
+		if (isExternalRuntime) return initPasswordExternal(externalConsolePassword)
+
 		val client = PicoOnebotClient()
 
 		// 1) 先看是不是全新安装（必须先初始化密码）
@@ -372,8 +421,37 @@ class SetupFlow(private val context: Context) {
 		)
 	}
 
-	/** 卸载并重装协议端，清掉它的配置（含控制台密码）。 */
+	/** 使用外部控制台的状态接口校验凭据。 */
+	private suspend fun initPasswordExternal(password: String?): Outcome {
+		val candidates = password?.let(::listOf) ?: CredentialStore.candidates()
+
+		val client = PicoOnebotClient()
+		for (pwd in candidates) {
+			client.setCredential(pwd)
+			val st = runCatching { client.status() }.getOrNull()
+			if (st == null || st.version.isBlank()) continue
+
+			// 校验通过才落盘
+			webuiPassword = pwd
+			if (st.online) {
+				if (st.selfId.isNotEmpty()) loggedInSelfId = st.selfId
+				markPassed(Step.SCAN_LOGIN)
+				return Outcome.Done(Step.CONFIGURE_BACKEND)
+			}
+			return Outcome.Done(Step.SCAN_LOGIN)
+		}
+
+		return Outcome.Failed("外部 PicoOnebot 控制台密码校验失败", externalPasswordHint)
+	}
+
+	/** 外部模式下密码失败时的指引。 */
+	private val externalPasswordHint: String
+		get() = "请先在外部 PicoOnebot 的 WebUI（$CONSOLE_HOST:$CONSOLE_PORT）里完成密码初始化，" +
+			"再填写控制台密码。"
+
+	/** 卸载并重装协议端，清掉它的配置（含控制台密码）。仅原生路径可达。 */
 	private suspend fun resetProtocol() {
+		if (isExternalRuntime) return
 		runCatching {
 			val pm = context.packageManager
 			@Suppress("DEPRECATION")
@@ -435,9 +513,14 @@ class SetupFlow(private val context: Context) {
 
 		// 4) 超时
 		return Outcome.NeedUserAction(
-			message = "等待扫码超时。请打开 PicoOnebot，" +
-				"点「同意」后用手机 QQ 扫码登录。",
-			actionLabel = "打开 PicoOnebot",
+			message = if (isExternalRuntime) {
+				"等待扫码超时。PicoOnebot 跑在独立环境里：" +
+					"请在浏览器打开 $CONSOLE_HOST:$CONSOLE_PORT 的 WebUI 扫码登录，" +
+					"或在外部运行环境自己的界面上扫码。登录成功后这里会自动继续。"
+			} else {
+				"等待扫码超时。请打开 PicoOnebot，点「同意」后用手机 QQ 扫码登录。"
+			},
+			actionLabel = if (isExternalRuntime) "去 PicoOnebot WebUI" else "打开 PicoOnebot",
 			action = { PrivacyHelper.bringPicoToFrontForLogin(context) }
 		)
 	}
@@ -462,6 +545,8 @@ class SetupFlow(private val context: Context) {
 	}
 
 	private suspend fun configureBackend(): Outcome {
+		if (isExternalRuntime) return configureBackendExternal()
+
 		val client = PicoOnebotClient()
 		client.setCredential(webuiPassword ?: PicoOnebotClient.INITIAL_PASSWORD)
 
@@ -490,10 +575,44 @@ class SetupFlow(private val context: Context) {
 		}
 	}
 
+	private suspend fun configureBackendExternal(): Outcome {
+		val expectedId = loggedInSelfId
+		val actualId = readExternalOneBotAccount()
+		if (actualId.isNullOrBlank() || (expectedId != null && expectedId != actualId)) {
+			return Outcome.Failed(
+				reason = "无法验证外部 PicoOnebot 的 OneBot 登录状态（$CONSOLE_HOST:$BACKEND_PORT）",
+				hint = "请在 PicoOnebot 启用本机正向 WebSocket，留空访问令牌，并确认已登录。"
+			)
+		}
+		prefs.edit().putBoolean(passedKey(Step.DONE), true).putInt(stepKey, Step.DONE.order).apply()
+		return Outcome.Done(Step.DONE)
+	}
+
+	/** 复用消息引擎的握手，通过只读的 get_login_info 验证协议和账号。 */
+	private suspend fun readExternalOneBotAccount(): String? {
+		val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+		val connectedId = CompletableDeferred<String>()
+		val client = OneBotClient(scope, host = CONSOLE_HOST, port = BACKEND_PORT)
+		client.listener = object : OneBotClient.Listener {
+			override fun onConnected(selfId: String) { connectedId.complete(selfId) }
+			override fun onDisconnected(reason: String) { connectedId.complete("") }
+			override fun onMessage(msg: OneBotClient.IncomingMessage) = Unit
+		}
+		client.start()
+		return try {
+			withTimeoutOrNull(5_000) { connectedId.await() }
+		} finally {
+			client.stop()
+			scope.cancel()
+		}
+	}
+
 	/**
 	 * 配置 AI：只做「有没有填 Key」的检查，真正的连通性由主页的 BotService 验证。
 	 */
 	private suspend fun configureAi(): Outcome {
+		if (isExternalRuntime) return configureBackendExternal()
+
 		val key = apiKey?.trim().orEmpty()
 		if (key.isEmpty()) {
 			return Outcome.NeedUserAction(
@@ -668,8 +787,8 @@ class SetupFlow(private val context: Context) {
 	fun lastConfigReply(): String? = prefs.getString(KEY_LAST_CONFIG_REPLY, null)
 
 	object Requirements {
-		const val MIN_SDK = 24
-		const val MIN_SDK_NAME = "7.0"
+		const val MIN_SDK = 23
+		const val MIN_SDK_NAME = "6.0"
 		const val MIN_FREE_BYTES = 300L * 1024 * 1024
 		/** PicoOnebot 与手表 QQ 同包名。 */
 		const val PACKAGE = "com.tencent.qqlite"
@@ -686,5 +805,18 @@ class SetupFlow(private val context: Context) {
 		private const val KEY_API_BASE = "api_base"
 		private const val KEY_API_MODEL = "api_model"
 		private const val KEY_PERSONA = "persona"
+
+		/** 外部路径独立的状态键，与原生 `step` 互不干扰。 */
+		private const val KEY_EXTERNAL_STEP = "external_step"
+		private const val EXTERNAL_PASSED_PREFIX = "external_passed_"
+		private const val NATIVE_PASSED_PREFIX = "passed_"
+
+		private const val CONSOLE_HOST = "127.0.0.1"
+
+		/** 控制台端口（PicoOnebot WebUI / API）。 */
+		private const val CONSOLE_PORT = 6099
+
+		/** OneBot 正向 WS 端口（PicoOnebot 提供服务端，本应用连进来）。 */
+		private const val BACKEND_PORT = 3001
 	}
 }

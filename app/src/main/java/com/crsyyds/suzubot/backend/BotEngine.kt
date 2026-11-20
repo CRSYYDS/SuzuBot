@@ -385,7 +385,8 @@ class BotEngine(
 			while (isActive) {
 				delay(30_000)
 				try {
-					sessionLocks.keys.forEach { key ->
+					// .keys 是 ConcurrentHashMap.KeySetView（API 24 才有），先转 List 兼容 API 23
+					sessionLocks.keys.toList().forEach { key ->
 						val ev = social.tick(key)
 						lastPhase = social.state(key).phase.name.lowercase()
 						if (ev != null) {

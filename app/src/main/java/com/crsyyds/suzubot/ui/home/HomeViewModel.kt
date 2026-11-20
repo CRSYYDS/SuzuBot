@@ -7,14 +7,17 @@ import com.crsyyds.suzubot.backend.BotRuntime
 import com.crsyyds.suzubot.backend.ModelChainManager
 import com.crsyyds.suzubot.pico.CredentialStore
 import com.crsyyds.suzubot.pico.PicoOnebotClient
+import com.crsyyds.suzubot.runtime.PicoRuntimeMode
 import com.crsyyds.suzubot.setup.PrivacyHelper
 import com.crsyyds.suzubot.setup.SetupFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class HomeUiState(
 	val loading: Boolean = false,
@@ -34,7 +37,16 @@ data class HomeUiState(
 	/** 是否已经填过 API Key（用于引导高亮） */
 	val apiKeyConfigured: Boolean = false,
 	/** 是否已经自定义过人设（用于引导高亮） */
-	val personaConfigured: Boolean = false
+	val personaConfigured: Boolean = false,
+	/** 是否跑在外部运行环境（纯 64 位设备，协议端由用户自己起）。 */
+	val externalRuntime: Boolean = false,
+	/** 外部模式「启动」按钮的提示；空 = 无提示。 */
+	val launchNotice: String = "",
+	/** 正在验证控制台密码 */
+	val credentialSaving: Boolean = false,
+	/** 控制台密码验证反馈：null = 无，true = 成功，false = 失败 */
+	val credentialOk: Boolean? = null,
+	val credentialMessage: String = ""
 ) {
 	/** 首次配置：两项都没配 */
 	val needsSetup: Boolean get() = !modelsConfigured || !personaConfigured
@@ -44,7 +56,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
 	private val flow = SetupFlow(app)
 	private val chainManager = ModelChainManager(app)
-	private val _state = MutableStateFlow(HomeUiState())
+	private val _state = MutableStateFlow(HomeUiState(externalRuntime = isExternal()))
 	val state: StateFlow<HomeUiState> = _state.asStateFlow()
 
 	private val client = PicoOnebotClient()
@@ -54,6 +66,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 		startPolling()
 		refresh()
 	}
+
+	/** 外部运行环境：本机不装、不拉起、不重置协议端。 */
+	private fun isExternal(): Boolean =
+		PicoRuntimeMode.current() == PicoRuntimeMode.EXTERNAL_ARM64
+
+	/** `isPicoRunning()` 会开 TCP socket，必须离开主线程，否则外部模式会误报离线。 */
+	private suspend fun picoRunningOffMain(): Boolean =
+		withContext(Dispatchers.IO) { PrivacyHelper.isPicoRunning() }
 
 	/**
 	 * 解析可用的控制台密码。
@@ -90,13 +110,17 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 	fun refresh() {
 		viewModelScope.launch {
 			_state.value = _state.value.copy(loading = true, error = null)
-			val running = PrivacyHelper.isPicoRunning()
+			val running = picoRunningOffMain()
+			val external = _state.value.externalRuntime
+
+			// 控制台一旦可达，外部模式的「先去启动」提示就过期了
+			if (running) _state.value = _state.value.copy(launchNotice = "")
 
 			if (!running) {
 				_state.value = _state.value.copy(
 					loading = false,
 					status = null,
-					error = "协议端未运行",
+					error = if (external) "外部协议端未连接" else "协议端未运行",
 					picoRunning = false,
 					consoleAuthed = false,
 					modelsConfigured = chainManager.usable().isNotEmpty(),
@@ -165,14 +189,26 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 		dir.exists() && dir.listFiles()?.any { it.name.endsWith(".md") } == true
 	}.getOrDefault(false)
 
+	/** 外部模式的启动动作：本机不装、不拉起、不开守卫，只重新探测一次。 */
 	fun launchPico() {
 		if (_state.value.picoLaunching) return
+
+		if (_state.value.externalRuntime) {
+			_state.value = _state.value.copy(
+				picoLaunching = false,
+				launchNotice = "请先在独立运行环境里启动 PicoOnebot，" +
+					"确认控制台监听 127.0.0.1:6099，再回来点「重新检测」。"
+			)
+			refresh()
+			return
+		}
+
 		viewModelScope.launch {
 			_state.value = _state.value.copy(picoLaunching = true, botError = "")
 			val app = getApplication<Application>()
 
 			try {
-				if (PrivacyHelper.isPicoRunning()) {
+				if (picoRunningOffMain()) {
 					_state.value = _state.value.copy(picoLaunching = false, picoRunning = true)
 					refresh()
 					return@launch
@@ -190,7 +226,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 				var ok = false
 				for (i in 0 until 50) {
 					delay(500)
-					if (PrivacyHelper.isPicoRunning()) {
+					if (picoRunningOffMain()) {
 						ok = true
 						break
 					}
@@ -263,6 +299,14 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 	 *  那个操作会同时清 DE 存储。
 	 */
 	fun resetProtocol() {
+		// 外部模式下协议端不在本应用管理范围内：不跳应用详情页、不卸载、不清数据
+		if (_state.value.externalRuntime) {
+			_state.value = _state.value.copy(
+				botError = "外部运行环境不会卸载或清除协议端数据，请改用上面的密码验证。"
+			)
+			return
+		}
+
 		viewModelScope.launch {
 			val app = getApplication<Application>()
 
@@ -322,7 +366,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 					} else {
 						"重装失败，请重新走一遍部署向导。"
 					},
-					picoRunning = com.crsyyds.suzubot.setup.PrivacyHelper.isPicoRunning()
+					picoRunning = picoRunningOffMain()
 				)
 				return
 			}
@@ -360,6 +404,56 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 		}
 	}
 
+	/** 校验外部控制台密码，通过后写入本机的 CredentialStore。 */
+	fun saveConsoleCredential(input: String) {
+		if (!_state.value.externalRuntime || _state.value.credentialSaving) return
+		if (input.isBlank()) {
+			_state.value = _state.value.copy(credentialOk = false, credentialMessage = "请先输入控制台密码")
+			return
+		}
+
+		viewModelScope.launch {
+			_state.value = _state.value.copy(credentialSaving = true, credentialOk = null, credentialMessage = "")
+
+			// 15 秒超时前先判活，别让用户干等
+			if (!picoRunningOffMain()) {
+				_state.value = _state.value.copy(
+					credentialSaving = false,
+					credentialOk = false,
+					credentialMessage = "127.0.0.1:6099 无响应，先在外部环境里启动协议端"
+				)
+				return@launch
+			}
+
+			val result = runCatching {
+				val status = PicoOnebotClient(credential = input).status()
+				check(status.version.isNotBlank())
+			}
+
+			if (result.isSuccess) {
+				CredentialStore.markGood(input)
+				_state.value = _state.value.copy(
+					credentialSaving = false,
+					credentialOk = true,
+					credentialMessage = "验证通过，已保存到本机"
+				)
+				refresh()
+				return@launch
+			}
+
+			val err = result.exceptionOrNull()
+			_state.value = _state.value.copy(
+				credentialSaving = false,
+				credentialOk = false,
+				credentialMessage = if (err is PicoOnebotClient.UnauthorizedException) {
+					"密码被控制台拒绝（401），请确认是那个环境里正在用的密码"
+				} else {
+					"无法验证外部 PicoOnebot 控制台"
+				}
+			)
+		}
+	}
+
 	fun startBot() {
 		val app = getApplication<Application>()
 		if (chainManager.usable().isEmpty()) {
@@ -367,7 +461,13 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 			return
 		}
 		if (!_state.value.picoRunning) {
-			_state.value = _state.value.copy(botError = "协议端没在运行，先点「启动协议端」")
+			_state.value = _state.value.copy(
+				botError = if (_state.value.externalRuntime) {
+					"外部协议端没连上，先在独立运行环境里启动它"
+				} else {
+					"协议端没在运行，先点「启动协议端」"
+				}
+			)
 			return
 		}
 		viewModelScope.launch {
@@ -388,7 +488,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 		viewModelScope.launch {
 			while (isActive) {
 				val engine = BotRuntime.currentOrNull()
-				val running = PrivacyHelper.isPicoRunning()
+				val running = picoRunningOffMain()
 				_state.value = _state.value.copy(
 					botConnected = engine?.connected ?: false,
 					botSelfId = engine?.selfId.orEmpty(),

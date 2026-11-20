@@ -2,8 +2,10 @@ package com.crsyyds.suzubot.setup
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.util.Log
 import com.crsyyds.suzubot.pico.PicoOnebotClient
+import com.crsyyds.suzubot.runtime.PicoRuntimeMode
 
 /**
  * 协议端启动 / 隐私政策引导。
@@ -70,6 +72,7 @@ object PrivacyHelper {
 		returnToApp: Boolean = true,
 		returnDelayMs: Long = 0
 	): Boolean {
+		if (PicoRuntimeMode.current() != PicoRuntimeMode.NATIVE) return false
 		val ok = startPicoActivity(context)
 		if (!ok) return false
 
@@ -137,6 +140,11 @@ object PrivacyHelper {
 
 	/** 只发启动 Intent，不做任何切回。 */
 	fun startPicoActivity(context: Context): Boolean {
+		when (PicoRuntimeMode.current()) {
+			PicoRuntimeMode.EXTERNAL_ARM64 -> return openPicoConsole(context)
+			PicoRuntimeMode.UNSUPPORTED -> return false
+			PicoRuntimeMode.NATIVE -> Unit
+		}
 		val attempts = listOf(
 			Intent().setClassName(PICO_PKG, PICO_LAUNCHER),
 			context.packageManager.getLaunchIntentForPackage(PICO_PKG)
@@ -151,6 +159,16 @@ object PrivacyHelper {
 		}
 		Log.w(TAG, "cannot start pico activity")
 		return false
+	}
+
+	private fun openPicoConsole(context: Context): Boolean = runCatching {
+		val intent = Intent(Intent.ACTION_VIEW, Uri.parse(PicoOnebotClient.DEFAULT_BASE_URL))
+			.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+		context.startActivity(intent)
+		true
+	}.getOrElse {
+		Log.w(TAG, "cannot open pico console", it)
+		false
 	}
 
 	/**
