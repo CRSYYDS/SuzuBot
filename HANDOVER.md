@@ -236,6 +236,7 @@ adb shell pm uninstall --user 0 com.crsyyds.suzubot
 - ❌ **纯 ARM64 真机直装受限。** 2026-11-20 在 Moto XT2537-4（Android 16）实测，系统只报 `arm64-v8a`（`zygote64`、`native.bridge=0`）。主用户安装原样 PicoOnebot 0.16 返回 `INSTALL_FAILED_NO_MATCHING_ABIS`，设备上没有安装协议端。SuzuBot 的纯 ARM64 模式需要已经运行的 PicoOnebot 实例。
 - ✅ 同机覆盖安装 SuzuBot 后，向导显示「连接 PicoOnebot」及缺少运行环境的提示，清单已移除跳过的安装步骤。SuzuBot 仅安装于主用户 0。
 - ✅ **ARM32 转译基础验证。** 同一台设备上，`liba32android` 探针执行合成 ARM32 指令返回 42，并只读扫描原包里的 52 个库，扫描前后的 SHA-256 一致。上游 ELF 加载测试也通过，两个合成 ARM32 库完成依赖加载、重定位和调用，返回 123。PicoOnebot 的 Android 应用进程仍缺可用的本机运行器，扫码与收发未进入实测。
+- 🧪 **独立 ARM64 运行器原型。** `compat/arm64-runner` 提供基于 Armbat v0.1.4 的宿主补丁和构建脚本。已验证补丁可应用，并在本机验证原包校验通过、同尺寸的错误文件被拒绝。宿主完整构建仍待补齐上游子模块，访客 `:MSF` 服务路由与端到端流程待验证。
 - ⚠️ 用户真机端到端验证主要靠人工，改动 `SetupFlow` 后务必完整跑一遍 8 步
 
 ### Release 历史

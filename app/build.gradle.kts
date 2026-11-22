@@ -34,7 +34,7 @@ android {
 
 		// versionName 是给人看的语义化版本；
 		// versionCode 用构建时间戳，保证每次构建唯一（避免 ColorOS 报「已安装相同版本」）
-		versionName = "1.1.5"
+		versionName = "1.1.6"
 		versionCode = (System.currentTimeMillis() / 60_000L).toInt()
 
 		vectorDrawables { useSupportLibrary = true }

@@ -406,7 +406,7 @@ class PicoOnebotClient(
 	/**
 	 * 探测控制台是否处于「必须先修改密码」状态（全新安装）。
 	 *
-	 * 实测的服务端行为（PicoOnebot 0.16）：
+	 * 实测的服务端行为（PicoOnebot 0.16 / 0.17）：
 	 *   无认证        → HTTP 401 {"ok":false,"message":"unauthorized"}
 	 *   默认密码 picopico → HTTP 428 {"ok":false,"mustChangePassword":true,...}
 	 *

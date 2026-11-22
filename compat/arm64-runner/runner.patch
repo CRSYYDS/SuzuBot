@@ -1,0 +1,308 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index a7ea281..e292fc0 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -10,7 +10,7 @@ android {
+     ndkVersion = "29.0.13113456"
+ 
+     defaultConfig {
+-        applicationId = "dev.armbat"
++        applicationId = "com.crsyyds.suzubot.arm64runner"
+         minSdk = 31
+         targetSdk = 36
+         versionCode = 5
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index 9c1c715..48770f3 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -38,15 +38,7 @@
+     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+-    <!--
+-        The library, a game's data and its expansion files live under one folder
+-        on the shared storage, so they can be filled and copied out with a file
+-        manager or adb. Since Android 11 that needs all-files access; the
+-        launcher asks for it through the system screen on first start.
+-    -->
+-    <uses-permission
+-        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+-        tools:ignore="ScopedStorage" />
++
+     <!--
+         A running guest is announced as foreground work, so the process keeps
+         the importance of a running application instead of a cached one.
+@@ -54,12 +46,7 @@
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+-    <!--
+-        The container updates itself from its own releases. The platform still
+-        asks the user to allow installs from this application once; the updater
+-        only sends the downloaded APK to that installer.
+-    -->
+-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
++
+ 
+     <application
+         android:name=".ArmbatApp"
+diff --git a/app/src/main/java/dev/armbat/ArmbatApp.kt b/app/src/main/java/dev/armbat/ArmbatApp.kt
+index 3131897..b232b71 100644
+--- a/app/src/main/java/dev/armbat/ArmbatApp.kt
++++ b/app/src/main/java/dev/armbat/ArmbatApp.kt
+@@ -19,6 +19,7 @@ class ArmbatApp : Application() {
+ 
+     override fun onCreate() {
+         super.onCreate()
++        GuestStorage.initialize(this)
+         ArmbatLog.init(this)
+ 		GuestDexRuntime.initialize(this)
+         installCrashHandler()
+diff --git a/app/src/main/java/dev/armbat/GuestDex.kt b/app/src/main/java/dev/armbat/GuestDex.kt
+index 84061a3..16eee04 100644
+--- a/app/src/main/java/dev/armbat/GuestDex.kt
++++ b/app/src/main/java/dev/armbat/GuestDex.kt
+@@ -76,7 +76,7 @@ import java.util.zip.ZipFile
+ object GuestDex {
+ 
+     /** Bump when the rewrite rules or the cache layout change. */
+-    private const val CACHE_VERSION = 5
++    private const val CACHE_VERSION = 6
+ 
+     private const val CACHE_MARKER = ".ok"
+     private const val DEX_CLASS_LOADER_CLASS = "Ldalvik/system/DexClassLoader;"
+@@ -373,8 +373,10 @@ object GuestDex {
+                     zip.getInputStream(source).use { input ->
+                         target.outputStream().use { output -> input.copyTo(output) }
+                     }
+-                    rewrite(target, packageName, data, obb, cpuInfo, onStage)
+-                    target.setReadOnly()
++                    if (packageName != PicoArchive.PACKAGE) {
++                        rewrite(target, packageName, data, obb, cpuInfo, onStage)
++                    }
++                    if (!target.setReadOnly()) throw IOException("Cannot make guest dex read-only")
+                 }
+             }
+             val platform = File(temporary, PLATFORM_DEX)
+diff --git a/app/src/main/java/dev/armbat/GuestLauncher.kt b/app/src/main/java/dev/armbat/GuestLauncher.kt
+index e3311cf..302b1ff 100644
+--- a/app/src/main/java/dev/armbat/GuestLauncher.kt
++++ b/app/src/main/java/dev/armbat/GuestLauncher.kt
+@@ -200,7 +200,7 @@ class GuestLauncher(private val host: Activity) {
+          * current platform no longer supports.
+          */
+         private fun grantedByAllFiles(permission: String): Boolean =
+-            GuestStorage.isAvailable() && permission in STORAGE_FROM_ALL_FILES
++            android.os.Environment.isExternalStorageManager() && permission in STORAGE_FROM_ALL_FILES
+ 
+         override fun checkPermission(permission: String, pid: Int, uid: Int): Int =
+             if (grantedByAllFiles(permission)) {
+@@ -2082,7 +2082,7 @@ class GuestLauncher(private val host: Activity) {
+      * request is only noise and is skipped while that access is held.
+      */
+     private fun satisfiedWithoutAsking(): Set<String> =
+-        if (GuestStorage.isAvailable()) STORAGE_FROM_ALL_FILES else emptySet()
++        if (android.os.Environment.isExternalStorageManager()) STORAGE_FROM_ALL_FILES else emptySet()
+ 
+     private fun launchableActivity(apkPath: String): android.content.pm.ActivityInfo? {
+         @Suppress("DEPRECATION")
+@@ -2090,27 +2090,10 @@ class GuestLauncher(private val host: Activity) {
+             apkPath,
+             PackageManager.GET_ACTIVITIES or PackageManager.GET_META_DATA,
+         ) ?: return null
+-        val activities = archive.activities ?: return null
+-        for (activity in activities) {
+-            ArmbatLog.i(TAG, "activity in manifest: ${activity.name}")
+-        }
+-        // The entry point an icon starts, not the first component the manifest
+-        // lists: an archive may declare a helper before it (a store sign-in
+-        // wrapper, a licence check), and that helper then asks the platform for
+-        // a service the guest does not have -- a dialog where the application
+-        // should be. PackageManager drops intent filters, so the manifest is
+-        // read from the archive itself.
+-        val entry = runCatching {
+-            ZipFile(apkPath).use { zip ->
+-                val manifest = zip.getEntry(ApkManifest.FILE)
+-                if (manifest == null) {
+-                    null
+-                } else {
+-                    zip.getInputStream(manifest).use { ApkManifest.launcherActivity(it.readBytes()) }
+-                }
+-            }
+-        }.getOrNull()
+-        return activities.firstOrNull { it.name == entry } ?: activities.firstOrNull()
++        if (archive.packageName != PicoArchive.PACKAGE || !PicoArchive.matches(File(apkPath))) {
++            return null
++        }
++        return archive.activities?.firstOrNull { it.name == PicoArchive.ENTRY && it.enabled && it.exported }
+     }
+ 
+     /**
+diff --git a/app/src/main/java/dev/armbat/GuestStorage.kt b/app/src/main/java/dev/armbat/GuestStorage.kt
+index 11bced9..48124a3 100644
+--- a/app/src/main/java/dev/armbat/GuestStorage.kt
++++ b/app/src/main/java/dev/armbat/GuestStorage.kt
+@@ -1,42 +1,20 @@
+ package dev.armbat
+ 
+ import android.content.Context
+-import android.content.Intent
+-import android.net.Uri
+-import android.os.Environment
+-import android.provider.Settings
+ import java.io.File
+-import androidx.core.net.toUri
+ 
+-/**
+- * The shared tree the container keeps its guests in.
+- *
+- * Everything a guest owns lives under one folder on the shared storage instead
+- * of the container's private directory: the archives themselves, a game's
+- * internal data and its expansion files. The user can then put an APK or a
+- * downloaded obb there with a file manager or adb, and back a save up by
+- * copying it out. The layout mirrors what an installed application has, one
+- * level below the container's own folder:
+- *
+- *     armbat/<name>.apk
+- *     armbat/android/data/<package>/{files,cache,databases,shared_prefs}
+- *     armbat/android/obb/<package>
+- *
+- * The shared storage is only reachable with "all files access": since Android
+- * 11 an application cannot read an arbitrary folder on /sdcard without it.
+- * While it is missing the tree is unusable, so the launcher asks for it before
+- * anything else and the library stays empty until the answer is yes.
+- */
++/** The guest library and data live in the container's private files directory. */
+ object GuestStorage {
+ 
+-    /** The folder under the shared storage root. */
+-    private const val FOLDER = "armbat"
++    private lateinit var directory: File
+ 
+-    /** Shared storage root, e.g. /storage/emulated/0. */
+-    @Suppress("DEPRECATION")
+-    fun root(): File = File(Environment.getExternalStorageDirectory(), FOLDER)
++    fun initialize(context: Context) {
++        directory = File(context.filesDir, "guests")
++    }
++
++    fun root(): File = directory
+ 
+-    fun isAvailable(): Boolean = Environment.isExternalStorageManager()
++    fun isAvailable(): Boolean = directory.isDirectory || directory.mkdirs() || directory.isDirectory
+ 
+     /** The guest's external tree, the stand-in for Android/data on the shared storage. */
+     fun dataDir(packageName: String): File = File(root(), "android/data/$packageName")
+@@ -75,21 +53,4 @@ object GuestStorage {
+         externalCacheDir(packageName).mkdirs()
+         obbDir(packageName).mkdirs()
+     }
+-
+-    /**
+-     * The system screen that grants the shared storage. The per-application
+-     * one is the only way to ask; the general list is the fallback for a
+-     * platform that does not answer the first intent.
+-     */
+-    fun request(context: Context) {
+-        val perApp = Intent(
+-            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+-            "package:${context.packageName}".toUri(),
+-        )
+-        runCatching { context.startActivity(perApp) }.onFailure {
+-            runCatching {
+-                context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+-            }
+-        }
+-    }
+ }
+diff --git a/app/src/main/java/dev/armbat/Library.kt b/app/src/main/java/dev/armbat/Library.kt
+index 35636b0..4821e72 100644
+--- a/app/src/main/java/dev/armbat/Library.kt
++++ b/app/src/main/java/dev/armbat/Library.kt
+@@ -79,6 +79,10 @@ class Library(private val context: Context) {
+             return Import.Unreadable
+         }
+ 
++        if (!PicoArchive.matches(incoming)) {
++            incoming.delete()
++            return Import.Unreadable
++        }
+         val parsed = inspect(incoming.absolutePath) ?: run {
+             incoming.delete()
+             return Import.Unreadable
+diff --git a/app/src/main/java/dev/armbat/MainActivity.kt b/app/src/main/java/dev/armbat/MainActivity.kt
+index cd4dda4..6fb1105 100644
+--- a/app/src/main/java/dev/armbat/MainActivity.kt
++++ b/app/src/main/java/dev/armbat/MainActivity.kt
+@@ -501,19 +501,9 @@ class MainActivity : ComponentActivity() {
+             }
+         }
+ 
+-        /**
+-         * The shared tree is the only place a guest can work in, so nothing is
+-         * imported or started until the platform grants access to it.
+-         */
+         fun requireStorage(): Boolean {
+-            if (GuestStorage.isAvailable()) {
+-                return true
+-            }
+-            notice = Notice(
+-                title = context.getString(R.string.storage_access_title),
+-                text = context.getString(R.string.storage_access_detail),
+-            )
+-            GuestStorage.request(this@MainActivity)
++            if (GuestStorage.isAvailable()) return true
++            notice = Notice(title = "Could not open the private guest directory")
+             return false
+         }
+ 
+@@ -548,12 +538,7 @@ class MainActivity : ComponentActivity() {
+         }
+ 
+         LaunchedEffect(storageReady) {
+-            if (!storageReady) {
+-                // Asked once the shell exists, so the answer comes back to a
+-                // resumed activity rather than to a window still being built.
+-                GuestStorage.request(this@MainActivity)
+-                return@LaunchedEffect
+-            }
++            if (!storageReady) return@LaunchedEffect
+             refresh()
+             // Dev hook: `am start -e launch <package>` starts an application
+             // without a tap, which is how the launcher is checked over adb.
+diff --git a/app/src/main/java/dev/armbat/PicoArchive.kt b/app/src/main/java/dev/armbat/PicoArchive.kt
+new file mode 100644
+index 0000000..9df9be4
+--- /dev/null
++++ b/app/src/main/java/dev/armbat/PicoArchive.kt
+@@ -0,0 +1,30 @@
++package dev.armbat
++
++import java.io.File
++import java.io.IOException
++import java.security.MessageDigest
++
++internal object PicoArchive {
++    const val PACKAGE = "com.tencent.qqlite"
++    const val ENTRY = "com.tencent.qqnt.watch.app.JumpActivity"
++    private const val SIZE = 52482333L
++    private const val SHA256 = "4ddd3451f40e49792b651ed5c31176a29c44b0d4b5f38d3c59558b6085f5025c"
++
++    fun matches(file: File): Boolean {
++        if (!file.isFile || file.length() != SIZE) return false
++        val digest = MessageDigest.getInstance("SHA-256")
++        try {
++            file.inputStream().use { input ->
++                val buffer = ByteArray(64 * 1024)
++                while (true) {
++                    val length = input.read(buffer)
++                    if (length < 0) break
++                    digest.update(buffer, 0, length)
++                }
++            }
++        } catch (_: IOException) {
++            return false
++        }
++        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) } == SHA256
++    }
++}

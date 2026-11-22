@@ -2,7 +2,6 @@
   "_comment": "运行时清单。协议端 APK 随 App 一起打包在 assets 内，无需联网下载。",
   "schemaVersion": 3,
   "updatedAt": "2026-11-18",
-
   "protocol": {
     "_comment": "PicoOnebot —— 由手表 QQ 注入 Hook 后重打包而成，包名与原版手表 QQ 相同，安装会覆盖原版。因此只需安装这一个 APK，不需要单独装手表 QQ。",
     "packageName": "com.tencent.qqlite",
@@ -12,18 +11,18 @@
     "replacesHostPackage": true,
     "variants": [
       {
-        "version": "0.16",
+        "version": "0.17",
         "status": "verified",
-        "sizeBytes": 52482332,
-        "sha256": "4ddd3451f40e49792b651ed5c31176a29c44b0d4b5f38d3c59558b6085f5025c",
+        "sizeBytes": 52437277,
+        "sha256": "e9b3cb5378178f79d3ec1fd671422e8cd4c54dfabd062766dffe26dd547e46f0",
         "bundled": {
-          "assetPath": "runtime/PicoOnebot-0.16.apk",
+          "assetPath": "runtime/PicoOnebot-0.17.apk",
           "note": "随 App 打包，免下载；已移除桌面图标（exported 保留，可被外部拉起）"
         },
         "sources": [
           {
             "id": "github",
-            "url": "https://github.com/Exmeaning/PicoOnebot/releases/download/v0.16/PicoOnebot_0.16.apk",
+            "url": "https://github.com/Exmeaning/PicoOnebot/releases/download/v0.17/PicoOnebot_0.17.apk",
             "resumable": true,
             "note": "官方 Release（仅作更新来源，正常路径不使用）"
           }
@@ -32,24 +31,25 @@
           "webuiPort": 6099,
           "webuiInitialPassword": "picopico",
           "onebotForwardWsPort": 3001
-        }
+        },
+        "fileName": "PicoOnebot-0.17.apk"
       }
     ]
   },
-
   "backend": {
     "_comment": "后端（可选）—— 用户自行提供，负责 AI 逻辑。本框架默认对接本地 LismQQ-bot。",
     "type": "onebot-v11-client",
     "note": "PicoOnebot 暴露 ws://127.0.0.1:3001 供后端连接"
   },
-
   "deviceRequirements": {
-    "minAndroidSdk": 24,
-    "requiredAbi": ["armeabi-v7a", "armeabi"],
+    "minAndroidSdk": 23,
+    "requiredAbi": [
+      "armeabi-v7a",
+      "armeabi"
+    ],
     "minFreeStorageBytes": 314572800,
     "recommendedRamMb": 3072
   },
-
   "mirrors": {
     "_comment": "GitHub 资源在国内的镜像回退（按顺序尝试）。{url} 会被替换为原始地址。仅用于协议端更新，首次安装不需要。",
     "github": [
